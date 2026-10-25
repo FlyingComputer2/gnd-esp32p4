@@ -6,7 +6,7 @@ Ground-station radio for the winject rover link on a **Guition JC-ESP32P4-M3-DEV
  air ─▶ C6 (winject-radio-esp32c6) ──SDIO──▶ P4 (winject_proxy) ──Ethernet UDP 22 / 9000──▶ opi5: winject-l3 ─▶ vstreamer receiver
 ```
 
-Everything upstream of the radio is UDP, as with the Realtek radio: point the GS `winject.conf` radio at the P4's address (`GROUND_IP` on the console, hostname `rover-ground-radio`).
+Everything upstream of the radio is UDP, as with the Realtek radio. On the GS, `sudo RADIO=p4 scripts/start.sh` in rover-ground runs winject-manager with `winject-manager/config.p4radio.cfg`, which points at the P4's address (`GROUND_IP` on the console, hostname `rover-ground-radio`; it comes from DHCP, so reserve it). Bench result against the rover's P4 + C6 on channel 1: ~31 fps, 0.6% UDP loss before FEC and none after, the same as the RTL8812AU.
 
 The proxy comes in with CMake FetchContent at a pinned commit (top-level `CMakeLists.txt`); it fetches `sdio_msg` from winject-radio-esp32c6 itself. To build against a local checkout:
 
