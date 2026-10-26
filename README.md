@@ -1,44 +1,98 @@
 # rover-ground-esp32p4
 
-Ground-station radio for the winject rover link on a **Guition JC-ESP32P4-M3-DEV** (ESP32-P4 rev v1.3, 32 MB PSRAM, 16 MB flash, ESP32-C6 on SDIO). It replaces the GS's RTL8812AU + winject-radio-realtek: the P4 runs only the **winject SDIO proxy** ([winject-radio-esp32-sdio-proxy](https://github.com/winject-wireless/winject-radio-esp32-sdio-proxy)), which drives the C6 ([winject-radio-esp32c6](https://github.com/winject-wireless/winject-radio-esp32c6)) and exposes it on Ethernet as an ordinary winject radio. winject-l3 and the video receiver stay on the GS host (Orange Pi 5, [rover-ground](https://github.com/FlyingComputer2/rover-ground)).
+Ground-station firmware for Guition JC-ESP32P4-M3-DEV (P4 rev 1.3, C6 on SDIO).
+The P4 runs the SDIO proxy, winject-l3 and vstreamer's `stream_receiver`.
+It recovers radio FEC once, then shares recovered RTP H.264 with Ethernet
+multicast and [Android](https://github.com/FlyingComputer2/rover-ground-android).
+Android depayloads RTP and displays H.264 through MediaCodec.
 
+```text
+C6 → SDIO proxy → L3 UpstreamQueue → stream_receiver → recovered RTP H.264
+                                                       ├→ USB channel 0 → Android
+                                                       └→ 239.255.42.1:5600 / UDP
 ```
- air ─▶ C6 (winject-radio-esp32c6) ──SDIO──▶ P4 (winject_proxy) ──Ethernet UDP 22 / 9000──▶ opi5: winject-l3 ─▶ vstreamer receiver
+
+See [video pipeline and multicast setup](docs/video-pipeline.md).
+
+| USB ID (`u16`) | Service | State |
+| --- | --- | --- |
+| 0 | Video | Receive-only RTP H.264 (`rtp-h264-v1`) |
+| 1 | MSP DisplayPort | TBA; not registered |
+| 2 | MSP RC telemetry | TBA; not registered |
+
+All unsigned IDs 0–65535 are supported by the transport. Management is selected
+by record kind and never routed as channel-0 video. See the [wire/API specification](docs/usb-upstream-proxy.md).
+
+## Build and flash
+
+ESP-IDF v5.5.5:
+
+```sh
+. ~/esp/esp-idf-v5.5.5/export.sh
+idf.py set-target esp32p4
+idf.py build
+idf.py -p /dev/ttyUSB0 flash monitor
 ```
 
-Everything upstream of the radio is UDP, as with the Realtek radio. On the GS, `sudo RADIO=p4 scripts/start.sh` in rover-ground runs winject-manager with `winject-manager/config.p4radio.cfg`, which points at the P4's address (`GROUND_IP` on the console, hostname `rover-ground-radio`; it comes from DHCP, so reserve it). Bench result against the rover's P4 + C6 on channel 1: ~31 fps, 0.6% UDP loss before FEC and none after, the same as the RTL8812AU.
+For an existing build, enable the new TinyUSB, socket-count and pthread-stack
+settings in `sdkconfig.defaults`, or regenerate `sdkconfig` from those defaults.
+The app retains the existing two OTA partitions and Ethernet HTTP OTA support.
+Normal C6 firmware is unchanged. Connect Android in USB host/OTG mode to the
+board's **High Speed USB (USB3)** port; use CH340 for flash and logs.
 
-The proxy comes in with CMake FetchContent at a pinned commit (top-level `CMakeLists.txt`); it fetches `sdio_msg` from winject-radio-esp32c6 itself. To build against a local checkout:
+L3 uses the local SDIO proxy through loopback UDP 22/9000. Its video upstream
+index is 1, TX bus d4, RX bus c3, domain 0xB00B, channel 1, OFDM_24M, 15 dBm.
+These must match the rover (with buses swapped). Video has no manager-level FEC;
+vstreamer's FEC terminates at the ground P4; P4 returns receiver feedback. The manager console is bound to
+127.0.0.1:2400. Do not run a second Ethernet L3 manager against this radio:
+the underlying radio proxy has a single peer per plane.
 
-```bash
-idf.py -DFETCHCONTENT_SOURCE_DIR_WINJECT_SDIO_PROXY=~/development/winject-radio-esp32-sdio-proxy build
-```
+The pinned L3 release needs [a small compatibility patch](patches/winject-l3-upstream-queue.patch)
+to create/publish `UpstreamQueue` for queue app transports. CMake applies it to
+the fetched dependency. The video service consumes that actual L3-created object. USB channel 0 is a
+local processed source with its own bounded queue, registered through
+`usb_upstream_register_source()`. Other services may still register L3 transports
+directly through `usb_upstream_register()`; duplicate IDs/transports fail.
+
+## USB behavior and status
+
+Development identity 303a:4001; bulk OUT 01 and IN 81. Android requests
+RESET_SESSION through EP0, negotiates v2 and opens channel 0 with receive
+credits. One record is one application datagram. Independent credits and bounded
+queues isolate stalled consumers; records are scheduled round-robin. Admission
+is lossy and provides no end-to-end delivery acknowledgement.
+
+`GROUND_READY usb=v2 video=0 ...` indicates the USB interface started after L3
+published its video transport. `GROUND_USB channel=...` reports local counters.
+`GROUND_L3_EXIT` indicates the manager stopped; reconnect/reset after recovery.
+The current boot does not automatically restart the manager. Backend failure
+invalidates an open USB session; HTTP OTA stays available over Ethernet.
+
+Host tests cover P4 FEC recovery and feedback, identical RTP output on both
+branches, queue isolation, and Android fragmented IDR reconstruction. Hardware USB
+enumeration, live video, power delivery and sustained latency still need a
+P4/phone bench run. No hardware has been flashed by this change.
 
 ## Board notes
 
 - **Silicon revision.** The module's P4 is rev v1.3. `sdkconfig.defaults` sets `CONFIG_ESP32P4_SELECTS_REV_LESS_V3` and `CONFIG_ESP32P4_REV_MIN_100`; without them the bootloader dies right after `entry 0x…` with `Illegal instruction`.
-- **USB.** Flash and console on the **CH340C** USB-C port (UART0, GPIO37/38, `/dev/ttyUSB*`), 921600 baud. The native USB-Serial/JTAG port (`303A:1001`) is not used.
+- **USB.** Flash and console on the **CH340C** USB-C port (UART0, GPIO37/38, `/dev/ttyUSB*`), 921600 baud. Radio packets use the dedicated **High Speed USB** connector, USB3 in schematic sheet `5_USB&485`; the Full Speed USB / USB-Serial/JTAG connector is separate.
 - **Ethernet.** IP101, PHY address 1, reset GPIO51; the RMII pins are IDF 5.5's P4 EMAC defaults, so no pin config.
 - **C6 link.** SDIO slot 1, CLK 18, CMD 19, D0–D3 14–17, C6 `CHIP_PU` on GPIO54: the proxy's defaults.
 - **C6 boot strap.** On this board the C6's `IO9` reaches only JP1 pin 24 (pins 20/22/24/26 are the C6's `U0RXD`/`U0TXD`/`IO9`/`CHIP_PU`). The proxy drives it from **GPIO45** (LDO_VO4 at 3.3 V), so jumper **JP1 pin 24 → GPIO45**. Without it `/c6/download` does nothing, but normal boot still works.
 - **Manual download mode** if auto-reset fails: hold SW1 (BOOT, GPIO35) → tap SW2 (RST) → release SW1. Bad firmware cannot brick the P4; do not run `espefuse`.
 
-## Build and flash
+## Host verification
 
-Native ESP-IDF v5.5 (`. ~/esp/esp-idf-v5.5.5/export.sh`):
+With the patched L3 checkout and BFC dependency available:
 
-```bash
-idf.py set-target esp32p4 build && idf.py -p /dev/ttyUSB0 flash monitor
+```sh
+python3 tests/run_host_tests.py --l3 /path/to/patched/winject-l3 --bfc /path/to/BFC
 ```
 
-Afterwards over HTTP:
-
-```bash
-curl --data-binary @build/rover-ground-esp32p4.bin http://<P4 IP>/update/p4   # kept once reached (e.g. curl http://<P4 IP>/)
-curl --data-binary @winject-esp32c6.bin http://<P4 IP>/update/c6             # needs winject firmware already on the C6
-```
-
-Console: `GROUND_IP ip=…`, `GROUND_READY`, `GROUND_PROXY_STATS …` every 10 s.
+The test covers matching Android/C++ golden wire bytes, split records, high u16
+IDs, channel 0 routing, duplicate bindings, independent credits, reset recovery
+and invalid traffic. A PyUSB bench client is in `tools/usb-radio/smoke.py`.
 
 ## First C6 flash (stock ESP-Hosted → winject)
 

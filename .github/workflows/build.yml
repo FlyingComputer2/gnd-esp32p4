@@ -1,0 +1,29 @@
+name: P4 firmware and USB tests
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ESP32-P4 firmware and run host protocol tests
+        run: |
+          docker run --rm -v "$PWD:/project" -w /project espressif/idf:v5.5.5 bash -c '
+            idf.py set-target esp32p4 build &&
+            python3 tests/run_host_tests.py --l3 build/_deps/winject_l3-src --bfc build/_deps/bfc-src &&
+            cmake -S tests/video -B video-build -DCMAKE_BUILD_TYPE=Debug \
+              -DFETCHCONTENT_SOURCE_DIR_VSTREAMER=/project/build/_deps/vstreamer-src \
+              -DFETCHCONTENT_SOURCE_DIR_BFC=/project/build/_deps/bfc-src \
+              -DFETCHCONTENT_SOURCE_DIR_ISA-L=/project/build/_deps/isa-l-src &&
+            cmake --build video-build -j 2 && ctest --test-dir video-build --output-on-failure
+          '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rover-ground-esp32p4
+          path: |
+            build/rover-ground-esp32p4.bin
+            build/bootloader/bootloader.bin
+            build/partition_table/partition-table.bin
+            build/ota_data_initial.bin
+            build/flash_args

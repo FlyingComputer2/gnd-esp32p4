@@ -1,0 +1,165 @@
+diff --git a/src/manager/App.cpp b/src/manager/App.cpp
+index 8b74480..c11e3a6 100644
+--- a/src/manager/App.cpp
++++ b/src/manager/App.cpp
+@@ -206,6 +206,14 @@ std::shared_ptr<Upstream> App::construct_upstream(
+     auto cv = bfc::cv_reactor_registry::get_instance().get(uc.reactor);
+     auto app_tx_queue = Registry::get_instance().get(uc.endpoint.rx);
+     auto app_rx_queue = Registry::get_instance().get(uc.endpoint.tx);
++    if (uc.endpoint.rx.empty() && uc.endpoint.tx.empty() && uc.reactor.empty() &&
++        cfg.on_upstream_queue) {
++        cv = upstream_reactor;
++        app_tx_queue = std::make_shared<ReactiveLossyQueue>();
++        app_rx_queue = std::make_shared<ReactiveLossyQueue>();
++        app_tx_queue->set_capacity(uc.rx_queue_capacity);
++        app_rx_queue->set_capacity(uc.rx_queue_capacity);
++    }
+     auto up = std::make_shared<QueueUpstream>(cv, uc, tx_queue, app_tx_queue,
+                                               app_rx_queue);
+     if (resume)
+@@ -213,6 +221,7 @@ std::shared_ptr<Upstream> App::construct_upstream(
+         up->resume_tx_sequences(*resume);
+     }
+     up->bind_callbacks();
++    if (cfg.on_upstream_queue) cfg.on_upstream_queue(uc.index, up->app_transport());
+     return up;
+ }
+ 
+diff --git a/src/manager/Config.cpp b/src/manager/Config.cpp
+index e50973c..d094b04 100644
+--- a/src/manager/Config.cpp
++++ b/src/manager/Config.cpp
+@@ -622,13 +622,15 @@ bool Config::validate(std::string* error) const
+         }
+         if (u.mode == UpstreamMode::queue)
+         {
+-            if (u.endpoint.rx.empty() || u.endpoint.tx.empty() ||
+-                u.reactor.empty())
++            const bool owned_queue = on_upstream_queue && u.endpoint.rx.empty() &&
++                                     u.endpoint.tx.empty() && u.reactor.empty();
++            if (!owned_queue && (u.endpoint.rx.empty() || u.endpoint.tx.empty() ||
++                u.reactor.empty()))
+             {
+                 return fail("upstream-" + std::to_string(i) +
+                             " needs rx, tx, and reactor");
+             }
+-            if (u.endpoint.rx == u.endpoint.tx)
++            if (!owned_queue && u.endpoint.rx == u.endpoint.tx)
+             {
+                 return fail("upstream-" + std::to_string(i) +
+                             " rx and tx must differ");
+diff --git a/src/manager/Config.h b/src/manager/Config.h
+index c32e385..96b92a9 100644
+--- a/src/manager/Config.h
++++ b/src/manager/Config.h
+@@ -1,6 +1,8 @@
+ #ifndef WINJECT_MANAGER_CONFIG_H_
+ #define WINJECT_MANAGER_CONFIG_H_
+ 
++#include <functional>
++#include <memory>
+ #include <netinet/in.h>
+ #include <stdint.h>
+ #include <string>
+@@ -10,6 +12,8 @@
+ namespace winject
+ {
+ 
++class UpstreamQueue;
++
+ enum class UpstreamMode
+ {
+     udp_static,
+@@ -119,6 +123,8 @@ struct Config
+     // Bind address for commands; replies go to the sender.
+     std::string console_in;
+     std::vector<UpstreamConfig> upstreams;
++    // Empty queue endpoint names: L3 creates the app transport and publishes it.
++    std::function<void(size_t, std::shared_ptr<UpstreamQueue>)> on_upstream_queue;
+ 
+     bool load(const std::string& path, std::string* error);
+     // Checks a Config already in memory (a parsed file or one filled in by
+diff --git a/src/manager/endpoint/QueueUpstream.cpp b/src/manager/endpoint/QueueUpstream.cpp
+index 447b67b..b09ab28 100644
+--- a/src/manager/endpoint/QueueUpstream.cpp
++++ b/src/manager/endpoint/QueueUpstream.cpp
+@@ -41,14 +41,17 @@ QueueUpstream::QueueUpstream(std::shared_ptr<Reactor> reactor,
+         throw std::invalid_argument("upstream queue already has a consumer");
+     }
+     claimed = true;
++    app_transport_ = std::make_shared<UpstreamQueue>(this->app_tx_queue, this->app_rx_queue);
+ }
+ QueueUpstream::~QueueUpstream()
+ {
++    if (app_transport_) app_transport_->disconnect();
+     unbind_callbacks();
+     release_claim();
+ }
+ void QueueUpstream::teardown()
+ {
++    if (app_transport_) app_transport_->disconnect();
+     Upstream::teardown();
+     release_claim();
+ }
+diff --git a/src/manager/endpoint/QueueUpstream.h b/src/manager/endpoint/QueueUpstream.h
+index 7319a9a..01bdafc 100644
+--- a/src/manager/endpoint/QueueUpstream.h
++++ b/src/manager/endpoint/QueueUpstream.h
+@@ -1,6 +1,7 @@
+ #ifndef WINJECT_MANAGER_QUEUE_UPSTREAM_H_
+ #define WINJECT_MANAGER_QUEUE_UPSTREAM_H_
+ #include "endpoint/Upstream.h"
++#include "endpoint/UpstreamQueue.h"
+ namespace winject
+ {
+ class QueueUpstream final : public Upstream
+@@ -12,6 +13,7 @@ public:
+                   std::shared_ptr<ReactiveLossyQueue> app_tx_queue,
+                   std::shared_ptr<ReactiveLossyQueue> app_rx_queue);
+     ~QueueUpstream() override;
++    std::shared_ptr<UpstreamQueue> app_transport() const { return app_transport_; }
+     // Also releases the app TX queue to a replacement consumer.
+     void teardown() override;
+ 
+@@ -20,6 +22,7 @@ private:
+     void release_claim();
+     std::shared_ptr<ReactiveLossyQueue> app_rx_queue;
+     bool claimed = false;
++    std::shared_ptr<UpstreamQueue> app_transport_;
+ };
+ }  // namespace winject
+ #endif
+diff --git a/src/manager/endpoint/UpstreamQueue.h b/src/manager/endpoint/UpstreamQueue.h
+new file mode 100644
+index 0000000..c02fc04
+--- /dev/null
++++ b/src/manager/endpoint/UpstreamQueue.h
+@@ -0,0 +1,28 @@
++#pragma once
++#include "endpoint/UpstreamQueues.h"
++#include <atomic>
++#include <memory>
++
++namespace winject {
++// App-facing queue transport, created and owned by L3. A retained handle is
++// safe after teardown, but connected() becomes false and sends are rejected.
++class UpstreamQueue {
++public:
++    UpstreamQueue(std::shared_ptr<ReactiveLossyQueue> ingress,
++                  std::shared_ptr<ReactiveLossyQueue> egress)
++        : ingress_(std::move(ingress)), egress_(std::move(egress)) {}
++    bool connected() const { return active_.load(); }
++    bool try_send(const uint8_t* data, size_t len) {
++        if (!connected() || !data || !len || len > 1445) return false;
++        if (ingress_->push(bfc::shared_sized_buffer::copy_from(data, len)) >= ingress_->capacity())
++            ++ingress_evictions;
++        return true;
++    }
++    auto receive() { return egress_->pop(); }
++    void disconnect() { active_.store(false); }
++    std::atomic<uint32_t> ingress_evictions{0};
++private:
++    std::shared_ptr<ReactiveLossyQueue> ingress_, egress_;
++    std::atomic<bool> active_{true};
++};
++}
