@@ -11,3 +11,12 @@ esp_err_t usb_upstream_register(uint16_t channel, const char *name,
                                 uint16_t mtu = 1445);
 esp_err_t usb_upstream_start();
 void usb_upstream_log_stats();
+
+#include <functional>
+#include <optional>
+// A local receive-only service, independently queued after application processing.
+// Callbacks must be nonblocking; invoked under the USB service lock.
+using UsbPacketSource = std::function<std::optional<bfc::shared_sized_buffer>()>;
+esp_err_t usb_upstream_register_source(uint16_t channel, const char *name,
+    UsbPacketSource receive, std::function<bool()> connected, const char *format,
+    uint16_t mtu = 1445);

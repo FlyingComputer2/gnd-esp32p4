@@ -1,17 +1,22 @@
 # rover-ground-esp32p4
 
 Ground-station firmware for Guition JC-ESP32P4-M3-DEV (P4 rev 1.3, C6 on SDIO).
-The P4 runs the SDIO radio proxy, **winject-l3**, and a multichannel USB bulk
-proxy. [rover-ground-android](https://github.com/FlyingComputer2/rover-ground-android)
-runs the video receiver, FEC recovery, RTP/H.264 depacketizer and MediaCodec display.
+The P4 runs the SDIO proxy, winject-l3 and vstreamer's `stream_receiver`.
+It recovers radio FEC once, then shares recovered RTP H.264 with Ethernet
+multicast and [Android](https://github.com/FlyingComputer2/rover-ground-android).
+Android depayloads RTP and displays H.264 through MediaCodec.
 
 ```text
-C6 ⇄ SDIO ⇄ P4 radio proxy ⇄ winject-l3 UpstreamQueue ⇄ USB bulk ⇄ Android
+C6 → SDIO proxy → L3 UpstreamQueue → stream_receiver → recovered RTP H.264
+                                                       ├→ USB channel 0 → Android
+                                                       └→ 239.255.42.1:5600 / UDP
 ```
+
+See [video pipeline and multicast setup](docs/video-pipeline.md).
 
 | USB ID (`u16`) | Service | State |
 | --- | --- | --- |
-| 0 | Video | Bidirectional vstreamer datagrams and reverse feedback |
+| 0 | Video | Receive-only RTP H.264 (`rtp-h264-v1`) |
 | 1 | MSP DisplayPort | TBA; not registered |
 | 2 | MSP RC telemetry | TBA; not registered |
 
@@ -38,21 +43,16 @@ board's **High Speed USB (USB3)** port; use CH340 for flash and logs.
 L3 uses the local SDIO proxy through loopback UDP 22/9000. Its video upstream
 index is 1, TX bus d4, RX bus c3, domain 0xB00B, channel 1, OFDM_24M, 15 dBm.
 These must match the rover (with buses swapped). Video has no manager-level FEC;
-vstreamer's FEC runs end to end through USB. The manager console is bound to
+vstreamer's FEC terminates at the ground P4; P4 returns receiver feedback. The manager console is bound to
 127.0.0.1:2400. Do not run a second Ethernet L3 manager against this radio:
 the underlying radio proxy has a single peer per plane.
 
 The pinned L3 release needs [a small compatibility patch](patches/winject-l3-upstream-queue.patch)
 to create/publish `UpstreamQueue` for queue app transports. CMake applies it to
-the fetched dependency. The USB registration takes that actual L3-created object:
-
-```cpp
-usb_upstream_register(0, "video", video_upstream);
-```
-
-The registration retains a shared handle; L3 owns transport construction and
-marks the handle disconnected at teardown. Reusing the same handle for two
-USB IDs or registering an ID twice fails. The current build exports video only.
+the fetched dependency. The video service consumes that actual L3-created object. USB channel 0 is a
+local processed source with its own bounded queue, registered through
+`usb_upstream_register_source()`. Other services may still register L3 transports
+directly through `usb_upstream_register()`; duplicate IDs/transports fail.
 
 ## USB behavior and status
 
@@ -68,8 +68,8 @@ published its video transport. `GROUND_USB channel=...` reports local counters.
 The current boot does not automatically restart the manager. Backend failure
 invalidates an open USB session; HTTP OTA stays available over Ethernet.
 
-The firmware and host tests build successfully. Native Android receiver tests
-recover a synthetic fragmented IDR after dropping FEC shards. Hardware USB
+Host tests cover P4 FEC recovery and feedback, identical RTP output on both
+branches, queue isolation, and Android fragmented IDR reconstruction. Hardware USB
 enumeration, live video, power delivery and sustained latency still need a
 P4/phone bench run. No hardware has been flashed by this change.
 

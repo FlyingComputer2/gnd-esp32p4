@@ -103,6 +103,27 @@ int main()
     command(6, "{\"op\":\"hello\",\"version\":2}");
     on_record({data, 2, 789, 1, {1}});
     assert(session == 0); // MSP TBA: never misroute to video.
+    std::deque<bfc::shared_sized_buffer> local;
+    auto source = [&]() -> std::optional<bfc::shared_sized_buffer> {
+        if (local.empty()) return std::nullopt;
+        auto p = std::move(local.front()); local.pop_front(); return p;
+    };
+    assert(usb_upstream_register_source(7, "video-rtp-h264", source, [] { return true; }, "rtp-h264-v1") == ESP_OK);
+    reset(900);
+    command(7, "{\"op\":\"hello\",\"version\":2}");
+    auto description = command(8, "{\"op\":\"list\"}");
+    std::string descriptor(description.payload.begin(), description.payload.end());
+    assert(descriptor.find("rtp-h264-v1") != std::string::npos);
+    assert(descriptor.find("\"read_only\":true") != std::string::npos);
+    local.push_back(bfc::shared_sized_buffer::copy_from("old", 3));
+    auto opened = command(9, "{\"op\":\"open\",\"channel\":7,\"rx_window\":1}");
+    std::string limits(opened.payload.begin(), opened.payload.end());
+    assert(limits.find("rtp-h264-v1") != std::string::npos && local.empty());
+    local.push_back(bfc::shared_sized_buffer::copy_from("rtp", 3));
+    auto media = decode(next_record(), 900);
+    assert(media.channel == 7 && media.payload == std::vector<uint8_t>({'r','t','p'}));
+    on_record({data, 7, 900, 1, {1}});
+    assert(session == 0); // Receive-only video rejects old Android feedback.
     backend->disconnect();
     assert(!backend->try_send(reinterpret_cast<const uint8_t *>("x"), 1));
     std::cout << "USB v2: u16 codec, direct L3 transport, isolation, credits and reset passed\n";

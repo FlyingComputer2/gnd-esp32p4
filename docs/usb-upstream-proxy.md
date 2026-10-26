@@ -1,12 +1,12 @@
 # USB upstream proxy, RGP4 version 2
 
 The P4 runs winject-l3 and exposes its queue app transports over one USB bulk
-endpoint pair. Android runs vstreamer's receiver/FEC/RTP pipeline and hardware
-video decode. Neither endpoint treats USB transfer boundaries as datagrams.
+endpoint pair. P4 runs vstreamer's FEC receiver; Android depayloads recovered RTP and uses
+MediaCodec for video decode. Neither endpoint treats USB transfer boundaries as datagrams.
 
 | Channel (`u16`) | Application | State |
 | --- | --- | --- |
-| 0 | Video | Implemented; unchanged vstreamer datagrams and reverse feedback |
+| 0 | Video | Implemented; receive-only RTP H.264 (`rtp-h264-v1`) |
 | 1 | MSP DisplayPort | TBA |
 | 2 | MSP RC telemetry | TBA |
 
@@ -14,7 +14,7 @@ All IDs 0–65535 are valid for application DATA/CREDIT. Management is selected
 by record kind. Its channel header field is zero and unused; a management
 REQUEST must never enter channel 0's video handler. USB IDs, L3 upstream indexes
 and radio buses are independent. Video maps USB 0 to L3 upstream index 1,
-ground TX bus d4 / RX bus c3. MSP IDs do not select any radio buses yet.
+ground TX bus d4 / RX bus c3 through the P4 receiver. MSP IDs do not select any radio buses yet.
 
 ## Direct L3 transport binding
 
@@ -27,25 +27,24 @@ video.mode = winject::UpstreamMode::queue;
 // Leave named endpoint and reactor fields empty: L3 constructs this transport.
 cfg.on_upstream_queue = [](size_t index,
                            std::shared_ptr<winject::UpstreamQueue> upstream) {
-    if (index == 1) usb_upstream_register(0, "video", std::move(upstream));
+    if (index == 1) ground_video_start(std::move(upstream));
 };
 ```
 
-The USB proxy accepts that actual L3-created object directly. No application
-queue pair, raw-queue alias or manual forwarding callback is required. L3 owns
-construction and disconnects the app handle on teardown. The USB proxy retains
-a shared handle, so its memory remains valid after teardown but sends fail.
-Registering the same ID or same app transport twice fails. There are at most
-16 registrations; storage is independent of the 65536-ID address space.
+The video service owns the shared handle and feeds stream_receiver. It registers
+a local processed source for USB 0 using `usb_upstream_register_source()`, with
+`format:rtp-h264-v1` and `read_only:true`. LIST and OPEN expose both fields.
+Callbacks pop from the dedicated bounded USB queue and check L3 connected state;
+they must not block. No app-created queue pair impersonates an L3 transport.
 
-The app-facing object has `try_send(bytes, length)` toward L3 and `receive()`
-from L3. The P4 boot creates bounded queues of 16 datagrams. Ingress evicts the
-oldest packet when full; admission is not delivery. L3's receive side also uses
-bounded lossy queues. Video manager FEC is disabled: vstreamer FEC is preserved
-end to end through USB. Current video datagrams are capped at 1445 bytes.
+Other bidirectional services can register the real L3 object directly with
+`usb_upstream_register()`. Duplicate IDs and repeated L3 objects are rejected;
+there are at most 16 registrations. L3 owns construction/disconnection, and
+retained shared handles stay memory-valid after teardown. No automatic manager
+restart/rebinding is implemented. L3 loss invalidates an open USB session.
 
-Backend replacement requires restarting/rebinding the proxy. The initial boot
-does not restart L3 automatically. L3 loss invalidates an open USB session.
+Video manager FEC is disabled. vstreamer FEC ends on P4 and its receiver reports
+return through L3, independently of USB. See [video pipeline](video-pipeline.md).
 
 ## Record header
 
@@ -74,7 +73,7 @@ All integers below are little endian, encoded explicitly without struct casts.
 The hard payload cap is 2048 bytes and management cap is 1024 bytes. DATA must
 also fit the channel's negotiated MTU. No application fragmentation, truncation,
 USB retransmission layer or additional checksum is added. USB already protects
-its transfers; stream/FEC handling remains the application's responsibility.
+its transfers; video radio FEC is handled by P4 before fanout.
 
 Parsers handle split headers, split payloads and multiple records per transfer.
 Stale bytes left after session reset are skipped until a current-session header
@@ -118,11 +117,13 @@ replies are bounded. Operations:
 
 - `{"op":"hello","version":2}` negotiates v2. Other operations require HELLO.
 - `{"op":"list","offset":0,"limit":4}` returns registered channel IDs,
-  names, `max_payload`, readiness and `next_offset` (null at end). MSP placeholders
+  names, `max_payload`, readiness, `read_only`, optional `format` and `next_offset`
+  (null at end). MSP placeholders
   are absent until their L3 transports exist and are bound.
 - `{"op":"open","channel":0,"rx_window":8}` opens video. The host supplies
   P4→Android receive slots; the reply reports the P4's Android→P4 `rx_window`
-  (currently 8), the channel and MTU. OPEN reply precedes DATA on that channel.
+  (currently 8), the channel and MTU. Video additionally returns
+  `format:rtp-h264-v1` and `read_only:true`. OPEN reply precedes DATA.
 - `{"op":"close","channel":0}` closes and discards pending channel traffic.
   An ID closed in this session cannot reopen until RESET_SESSION.
 - `{"op":"stats","offset":0,"limit":4}` returns local counters and credits.
@@ -182,10 +183,10 @@ into unbounded queues defeats flow control. Slow video consumption exhausts
 only video credits, while the reader continues to demultiplex other channels.
 
 Channel 0 feeds the native vstreamer RS receiver and RTP/H.264 depacketizer.
-A timer expires FEC deadlines and sends receiver link reports back on channel
-0 every 100 ms. Access units go to Android MediaCodec and a Surface. The P4
-forwards these wire datagrams unchanged. The decoder currently assumes the
-rover's 1080p30 H.264 stream. MSP handlers and transport bindings remain TBA.
+Android validates the `rtp-h264-v1` format in OPEN, then depayloads channel-0
+RTP into Annex-B AUs for MediaCodec. It sends no channel-0 DATA or radio reports.
+The decoder currently assumes 1080p30. Update firmware and app together; legacy
+video envelopes and feedback are incompatible with this receive-only source.
 
 ## Verification and remaining bench work
 

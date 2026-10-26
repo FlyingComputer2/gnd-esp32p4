@@ -24,6 +24,11 @@ struct Channel
     uint16_t id = 0, mtu = 1445, tx_credit = 0, rx_credit = 0, pending_credit = 0, window = 0;
     std::string name;
     std::shared_ptr<winject::UpstreamQueue> upstream;
+    UsbPacketSource source;
+    std::function<bool()> source_connected;
+    std::string format;
+    bool connected() const { return upstream ? upstream->connected() : source_connected(); }
+    auto receive() { return upstream ? upstream->receive() : source(); }
     bool open = false, closed = false;
     uint32_t sequence = 0, down = 0, up = 0, dropped = 0;
 };
@@ -59,7 +64,7 @@ void reset(uint32_t id)
         c.open = c.closed = false;
         c.tx_credit = c.rx_credit = c.pending_credit = 0;
         c.sequence = 0;
-        for (unsigned j = 0; j < 32 && c.upstream->receive(); ++j)
+        for (unsigned j = 0; j < 32 && c.receive(); ++j)
         {
         }
     }
@@ -199,7 +204,9 @@ void on_record(const Record &r)
                 cJSON_AddNumberToObject(item, "id", c.id);
                 cJSON_AddStringToObject(item, "name", c.name.c_str());
                 cJSON_AddNumberToObject(item, "max_payload", c.mtu);
-                cJSON_AddBoolToObject(item, "ready", c.upstream->connected());
+                cJSON_AddBoolToObject(item, "ready", c.connected());
+                if (!c.format.empty()) cJSON_AddStringToObject(item, "format", c.format.c_str());
+                cJSON_AddBoolToObject(item, "read_only", !c.upstream);
                 cJSON_AddItemToArray(list, item);
             }
             if (end < count)
@@ -217,7 +224,7 @@ void on_record(const Record &r)
                 error = "NO_REMOTE_HANDLER";
             else if (c->open || c->closed)
                 error = "ALREADY_OPEN_OR_CLOSED";
-            else if (!c->upstream->connected())
+            else if (!c->connected())
                 error = "BACKEND_NOT_READY";
             if (error)
             {
@@ -226,7 +233,7 @@ void on_record(const Record &r)
             }
             else
             {
-                for (unsigned j = 0; j < 32 && c->upstream->receive(); ++j)
+                for (unsigned j = 0; j < 32 && c->receive(); ++j)
                 {
                 }
                 c->open = true;
@@ -238,6 +245,8 @@ void on_record(const Record &r)
                 cJSON_AddNumberToObject(out, "channel", id);
                 cJSON_AddNumberToObject(out, "rx_window", 8);
                 cJSON_AddNumberToObject(out, "max_payload", c->mtu);
+                if (!c->format.empty()) cJSON_AddStringToObject(out, "format", c->format.c_str());
+                cJSON_AddBoolToObject(out, "read_only", !c->upstream);
             }
         }
         else if (!strcmp(op->valuestring, "close"))
@@ -294,7 +303,7 @@ void on_record(const Record &r)
         return;
     }
     auto *c = find(r.channel);
-    if (!hello || !c || !c->open || !c->upstream->connected())
+    if (!hello || !c || !c->open || !c->connected())
     {
         fail();
         return;
@@ -311,7 +320,7 @@ void on_record(const Record &r)
     }
     else if (r.kind == data)
     {
-        if (!c->rx_credit || r.payload.size() > c->mtu)
+        if (!c->upstream || !c->rx_credit || r.payload.size() > c->mtu)
         {
             fail();
             return;
@@ -354,20 +363,20 @@ std::vector<uint8_t> next_record()
     for (size_t i = 0; i < count; ++i)
     {
         auto &c = channels[cursor++ % count];
-        if (!c.open || !c.upstream->connected())
+        if (!c.open || !c.connected())
         {
             if (c.open)
             {
                 fail();
                 return {};
             }
-            for (unsigned j = 0; j < 32 && c.upstream->receive(); ++j)
+            for (unsigned j = 0; j < 32 && c.receive(); ++j)
                 ++c.dropped;
             continue;
         }
         if (!c.tx_credit)
             continue;
-        auto packet = c.upstream->receive();
+        auto packet = c.receive();
         if (!packet)
             continue;
         ++c.sequence;
@@ -431,7 +440,7 @@ void task(void *)
             else
             {
                 for (size_t i = 0; i < count; ++i)
-                    for (unsigned j = 0; j < 32 && channels[i].upstream->receive(); ++j)
+                    for (unsigned j = 0; j < 32 && channels[i].receive(); ++j)
                         ++channels[i].dropped;
             }
         }
@@ -518,6 +527,19 @@ esp_err_t usb_upstream_register(uint16_t id, const char *name,
     c.name = name;
     c.mtu = mtu;
     c.upstream = std::move(up);
+    return ESP_OK;
+}
+esp_err_t usb_upstream_register_source(uint16_t id, const char *name,
+    UsbPacketSource source, std::function<bool()> connected, const char *format, uint16_t mtu)
+{
+    std::lock_guard<std::mutex> lock(io);
+    if (!source || !connected || !name || strlen(name) > 31 || !format ||
+        strlen(format) > 31 || !mtu || mtu > 1445 || count == channels.size())
+        return ESP_ERR_INVALID_ARG;
+    if (find(id)) return ESP_ERR_INVALID_STATE;
+    auto &c = channels[count++];
+    c.id = id; c.name = name; c.mtu = mtu; c.format = format;
+    c.source = std::move(source); c.source_connected = std::move(connected);
     return ESP_OK;
 }
 #ifndef ROVER_USB_HOST_TEST
