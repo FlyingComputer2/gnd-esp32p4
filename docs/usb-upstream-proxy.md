@@ -168,7 +168,6 @@ UsbProxy proxy = new UsbProxy(errorListener);
 UsbProxy.Channel video = proxy.registerHandler(0, videoReceiver);
 proxy.connect(usbManager, device); // reset, HELLO and discovery
 video.open(8);
-video.trySend(feedbackDatagram);
 ```
 
 Java validates IDs as unsigned 16-bit integers; a Kotlin caller can convert a
@@ -182,7 +181,7 @@ Consumers may transfer the lease to bounded asynchronous work. Copying packets
 into unbounded queues defeats flow control. Slow video consumption exhausts
 only video credits, while the reader continues to demultiplex other channels.
 
-Channel 0 feeds the native vstreamer RS receiver and RTP/H.264 depacketizer.
+Channel 0 feeds the native RTP/H.264 depacketizer.
 Android validates the `rtp-h264-v1` format in OPEN, then depayloads channel-0
 RTP into Annex-B AUs for MediaCodec. It sends no channel-0 DATA or radio reports.
 The decoder currently assumes 1080p30. Update firmware and app together; legacy
@@ -193,8 +192,9 @@ video envelopes and feedback are incompatible with this receive-only source.
 Host tests exercise real USB service routing against the patched L3 app object:
 unsigned IDs, identical golden bytes, split records, management/video separation,
 duplicate bindings, credit isolation, stale sessions and invalid traffic. The
-native receiver test fragments a synthetic IDR into RTP, drops RS shards,
-verifies byte-identical recovery, and checks reverse feedback counters. Android
+P4 receiver integration test drops RS shards, verifies identical fanout RTP and
+reverse reports, and reconstructs an IDR. Android tests fragmented RTP/IDRs and
+rejects malformed/legacy packets. Android
 CI runs JVM tests, native tests and assembles an arm64 debug APK.
 
 The P4 firmware compiles with ESP-IDF 5.5.5 and fits its existing OTA slots.
