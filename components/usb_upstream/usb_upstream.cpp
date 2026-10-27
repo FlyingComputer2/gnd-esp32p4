@@ -388,8 +388,7 @@ std::vector<uint8_t> next_record()
         --c.tx_credit;
         ++c.up;
         control_burst = 0;
-        return encode(
-            {data, c.id, session, c.sequence, {packet->u8(), packet->u8() + packet->size()}});
+        return encode(data, c.id, session, c.sequence, packet->u8(), packet->size());
     }
     control_burst = 0;
     if (!controls.empty())
@@ -553,6 +552,7 @@ esp_err_t usb_upstream_start()
              mac[4], mac[5]);
     auto cfg = TINYUSB_DEFAULT_CONFIG(event_cb);
     cfg.task.priority = 16;
+    cfg.task.xCoreID = 0;
     cfg.descriptor.device = &device;
     cfg.descriptor.qualifier = &qualifier;
     cfg.descriptor.string = strings;

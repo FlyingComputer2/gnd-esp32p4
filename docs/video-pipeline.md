@@ -1,11 +1,41 @@
 # Ground video receive and fanout
 
 P4 runs the pinned vstreamer `stream_receiver` component, not a second codec.
-The L3-owned video `UpstreamQueue` (index 1) feeds receiver UDP
-`127.0.0.1:21082` through a local nonblocking bridge. This adapts the existing
-UDP-only receiver without changing its wire/FEC/feedback implementation.
-Receiver reports return on the same bridge socket and are sent back using
-`UpstreamQueue::try_send()`. Android no longer sends radio receiver reports.
+The L3-owned video `UpstreamQueue` (index 1) feeds the receiver directly through
+nonblocking datagram callbacks. Reverse receiver reports return using
+`UpstreamQueue::try_send()`. Both the proxy-to-L3 and L3-to-FEC data paths use
+in-process queues; only the low-rate radio management plane uses loopback UDP.
+Android does not send radio receiver reports.
+
+Radio queue callbacks run on CPU0 and the FEC receive worker runs on CPU1.
+This prevents heavy reconstruction from falling behind SDIO on one core while
+the other core is idle. The L3 app RX queue holds 256 datagrams.
+
+RS repair reconstructs only missing data rows; missing parity rows are used
+for matrix selection but are never rebuilt. Present data uses shared views.
+This avoids spending most of a core reconstructing parity that is discarded.
+The P4 receiver uses a 40 ms minimum expiry margin for scheduler jitter.
+
+The radio proxy's existing borrowed-input ownership copy allocates packet
+payloads in PSRAM (`GROUND_VIDEO_PSRAM_PACKETS`). L3 queue delivery preserves
+that owner, and the direct FEC input uses subviews instead of copying packets
+again. Both fanout consumers treat recovered RTP as immutable. Socket input
+still copies its reusable receive buffer. Reconstructed rows are 16-byte aligned
+and allocated in PSRAM (`VSTREAMER_RX_PSRAM`); output holds their application
+subviews. Only decoder source rows that need padding get temporary storage.
+
+Ground exposes `VSTREAMER_RS_PIE` because it compiles vstreamer through its own
+component. Before input, the receive worker compares the PIE kernel with the
+scalar reference for 1, 2 and 10 output rows using unaligned inputs and an odd
+length. `GROUND_RS_SELFTEST` logs mismatches, selected backend and timings;
+a mismatch disables PIE through the kernel's existing fallback. `GROUND_FEC`
+also reports the current backend. Single-row PIE recovery need not be faster
+than the scalar kernel; measure the full pipeline under the actual loss rate.
+
+USB DATA records are built directly in their final wire buffer from the shared
+RTP payload, avoiding an intermediate payload allocation/copy. The existing
+pending-record buffer retains ownership across partial TinyUSB writes and is
+cleared on session reset; wire framing and credits are unchanged.
 
 The receiver strips stream framing, repairs RS erasures, sequences recovered
 SDUs and emits RTP H.264. P4 does not depayload or decode H.264. Recovered RTP
@@ -14,19 +44,28 @@ shared by two independently bounded queues:
 
 | Consumer | Queue | Output |
 | --- | --- | --- |
-| USB | 32 packets, oldest eviction | Channel 0, one RTP packet per DATA |
-| Ethernet | 32 packets, oldest eviction | UDP 239.255.42.1:5600, TTL 1 |
+| USB | 512 packets, oldest eviction | Channel 0, one RTP packet per DATA |
+| Ethernet | 128 packets, oldest eviction | UDP 239.255.42.1:5600, TTL 1 |
+
+USB retains up to 512 packets to absorb credit pauses during codec/bitrate
+transitions. Both branches absorb recovery bursts independently. Ethernet drains at most
+two packets per scheduler turn. `MulticastEgress` retains the pending head
+packet on ENOMEM/ENOBUFS/EAGAIN, yields and retries in order; after 64 attempts
+it counts a send failure rather than holding stale video indefinitely.
+The EMAC uses 1600-byte DMA buffers and 24 TX descriptors so each MTU-sized
+packet needs one descriptor instead of three 512-byte descriptors. Multicast
+runs above the fanout worker; TinyUSB runs on CPU0, separate from the FEC worker.
 
 A stalled USB consumer cannot take packets from the Ethernet queue. Offline
 Ethernet drops its output and does not stop USB. Nonblocking UDP sends can drop;
 radio FEC does not protect losses after recovery. RTP gaps can require waiting
 for the next keyframe. DisplayPort/MSP remains TBA.
 
-The receiver queue/pool is compiled at 64 entries instead of desktop's 4096:
+The receiver queue/pool is compiled at 256 entries instead of desktop's 4096:
 CMake generates a pinned-header variant without modifying dependency sources.
-The pool slab is approximately 96 KB. RS block storage, tasks and lwIP buffers
+The pool slab is approximately 384 KB. RS block storage, tasks and lwIP buffers
 add memory; real heap/CPU/throughput must be measured on the P4. Source changes
-are guarded when the dependency pin changes. The L3 RX queue is 64 datagrams.
+are guarded when the dependency pin changes. The L3 RX queue is 256 datagrams.
 
 ## USB compatibility
 
@@ -60,6 +99,13 @@ a=rtpmap:96 H264/90000
 a=fmtp:96 packetization-mode=1
 ```
 
+On Rockchip ground stations, vstreamer's `multicast_receiver` sample runs
+`multicast_src -> rtp_h264_depay -> h264_decoder_mpp -> sdl_sink` (KMSDRM).
+Build with the multicast source, RTP depayloader, MPP decoder and SDL enabled,
+then run `multicast_receiver --interface end1` (or your Ethernet interface).
+The host's former L3/stream_receiver services must be stopped; P4 now owns FEC
+and radio feedback.
+
 Example receiver: `ffplay -protocol_whitelist file,udp,rtp -i ground-video.sdp`.
 The client must receive the sender's in-band SPS/PPS and a keyframe. There is
 no RTSP server, RTCP or multicast-client feedback aggregation. The payload type
@@ -81,9 +127,18 @@ drops shards, verifies byte-identical RTP on both output queues, reconstructs
 an IDR, checks reverse feedback and stalls one branch to verify isolation.
 The test needs local UDP sockets. Existing `tests/run_host_tests.py` additionally
 checks receive-only source metadata, source delivery and invalid inbound DATA.
+`owned_ingress_test` and `l3_owned_queue_test` verify original storage identity
+and retention after receiver/upstream shutdown. `fec_decode_test` exercises
+792 full/partial 21/31 blocks with mixed erasures and misaligned input views,
+checks bytes and aligned recovered rows, then releases every input owner while
+retaining outputs. Run these under ASan/UBSan when changing ownership.
 
-Runtime logs: GROUND_VIDEO contains receiver counters, bridge/feedback failures,
-USB and multicast evictions, multicast sends and drops. GROUND_USB reports USB
+Runtime logs: GROUND_VIDEO contains receiver counters, recovered RTP sequence
+gaps before fanout, L3 queue delivery and evictions, FEC input, feedback failures,
+USB and multicast evictions, multicast sends, offline discards, transient send
+retries, final send failures and the last socket errno. Offline discards before
+DHCP are not wired losses. RTP sequence gaps on a client do not identify the
+network segment where packets went missing. GROUND_USB reports USB
 credits and sends. Counters distinguish recovered radio loss from branch loss.
 
 Bench acceptance: moving video on Android and an Ethernet multicast client

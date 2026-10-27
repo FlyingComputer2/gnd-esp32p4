@@ -1,0 +1,583 @@
+diff --git a/src/components/stream_receiver.cpp b/src/components/stream_receiver.cpp
+index 7b9c8a7..e175729 100644
+--- a/src/components/stream_receiver.cpp
++++ b/src/components/stream_receiver.cpp
+@@ -197,7 +197,8 @@ void stream_receiver::enqueue_payloads(fec_rx_payload_list *payloads, size_t max
+     payloads->clear();
+ }
+ 
+-bool stream_receiver::ingest_datagram(const uint8_t *data, size_t len)
++bool stream_receiver::ingest_datagram(const uint8_t *data, size_t len,
++                                      const bfc::shared_sized_buffer *owner)
+ {
+     fec_rx_payload_list payloads;
+     bool                valid_media = false;
+@@ -248,13 +249,15 @@ bool stream_receiver::ingest_datagram(const uint8_t *data, size_t len)
+                 rx_bad_header++;
+                 return false;
+             }
+-            bfc::shared_sized_buffer shard = pool.acquire(payload_len);
++            bfc::shared_sized_buffer shard = owner
++                ? owner->subview(static_cast<size_t>(payload - data), payload_len)
++                : pool.acquire(payload_len);
+             if (0 == shard.capacity() || shard.size() != payload_len)
+             {
+                 recv_dropped++;
+                 return false;
+             }
+-            std::memcpy(shard.u8(), payload, payload_len);
++            if (!owner) std::memcpy(shard.u8(), payload, payload_len);
+             const uint64_t hdr_errors_before = fec.hdr_errors();
+             fec.push_air(std::move(shard), &payloads);
+             note_fec_output_gaps(fec, fec_gap_count);
+@@ -271,13 +274,15 @@ bool stream_receiver::ingest_datagram(const uint8_t *data, size_t len)
+                 recv_dropped++;
+                 return false;
+             }
+-            bfc::shared_sized_buffer sdu = pool.acquire(payload_len);
++            bfc::shared_sized_buffer sdu = owner
++                ? owner->subview(static_cast<size_t>(payload - data), payload_len)
++                : pool.acquire(payload_len);
+             if (0 == sdu.capacity() || sdu.size() != payload_len)
+             {
+                 recv_dropped++;
+                 return false;
+             }
+-            std::memcpy(sdu.u8(), payload, payload_len);
++            if (!owner) std::memcpy(sdu.u8(), payload, payload_len);
+             payloads.push_back(std::move(sdu));
+             if (dg > 0)
+             {
+@@ -323,8 +328,19 @@ void stream_receiver::stop_recv_thread()
+     recv_stop = false;
+ }
+ 
++int stream_receiver::set_datagram_transport(datagram_receive receive, datagram_send send)
++{
++    std::lock_guard<std::mutex> lock(mu);
++    if (opened) return -EBUSY;
++    if (!receive || !send) return -EINVAL;
++    queue_receive = std::move(receive);
++    queue_send = std::move(send);
++    return 0;
++}
++
+ void stream_receiver::recv_thread_main()
+ {
++    const bool direct = bool(queue_receive);
+     /* Bounded wait so block expiry and the in-order emit queue advance even
+      * when the wire goes quiet (e.g. tail of a burst loss). */
+     constexpr int k_poll_ms = 10;
+@@ -341,7 +357,7 @@ void stream_receiver::recv_thread_main()
+             std::lock_guard<std::mutex> lock(mu);
+             fd = recv_fd;
+         }
+-        if (fd < 0)
++        if (fd < 0 && !direct)
+         {
+             std::this_thread::sleep_for(std::chrono::milliseconds(10));
+             continue;
+@@ -350,7 +366,7 @@ void stream_receiver::recv_thread_main()
+         pollfd pfd {};
+         pfd.fd = fd;
+         pfd.events = POLLIN;
+-        const int pr = poll(&pfd, 1, k_poll_ms);
++        const int pr = direct ? 1 : poll(&pfd, 1, k_poll_ms);
+         if (recv_stop)
+         {
+             break;
+@@ -368,8 +384,15 @@ void stream_receiver::recv_thread_main()
+         if (pr > 0)
+         {
+             /* Drain everything that is ready before ticking. */
+-            for (;;)
++            for (unsigned burst = 0; burst < 64; ++burst)
+             {
++                if (direct)
++                {
++                    auto packet = queue_receive();
++                    if (!packet) break;
++                    if (ingest_datagram(packet->u8(), packet->size(), &*packet)) have_peer = true;
++                    continue;
++                }
+                 sockaddr_in src {};
+                 msghdr      msg {};
+                 iovec       iov {};
+@@ -436,9 +459,10 @@ void stream_receiver::recv_thread_main()
+             stream_header_write(wire, thdr);
+             stream_link_report_encode_payload(rep, wire + k_stream_header_len,
+                                               k_stream_link_report_payload_len);
+-            const ssize_t sent =
+-                sendto(fd, wire, sizeof(wire), MSG_DONTWAIT,
+-                       reinterpret_cast<sockaddr *>(&peer_addr), peer_len);
++            const ssize_t sent = direct
++                ? (queue_send(wire, sizeof(wire)) ? ssize_t(sizeof(wire)) : -1)
++                : sendto(fd, wire, sizeof(wire), MSG_DONTWAIT,
++                         reinterpret_cast<sockaddr *>(&peer_addr), peer_len);
+             if (sent == static_cast<ssize_t>(sizeof(wire)))
+             {
+                 telemetry_sent.fetch_add(1, std::memory_order_relaxed);
+@@ -469,6 +493,9 @@ void stream_receiver::recv_thread_main()
+         {
+             enqueue_payloads(&payloads, decoded_max);
+         }
++        // Bound each drain so FEC expiry, reports and lower-priority consumers
++        // progress even when an in-process producer is continuously ready.
++        if (direct) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+     }
+ }
+ 
+@@ -491,65 +518,72 @@ stream_link_report stream_receiver::link_report_snapshot() const
+ int stream_receiver::open()
+ {
+     std::string spec_copy;
++    bool direct = false;
+     {
+         std::lock_guard<std::mutex> lock(mu);
+         if (opened)
+         {
+             return 0;
+         }
+-        if (listen_spec.empty())
++        direct = bool(queue_receive);
++        if (listen_spec.empty() && !direct)
+         {
+             return -EINVAL;
+         }
+         spec_copy = listen_spec;
+     }
+ 
+-    char host[128];
+-    int  port = 0;
+-    if (parse_host_port(spec_copy, host, sizeof(host), &port) < 0)
++    int fd = -1;
++    char host[128] = "queue";
++    int port = 0;
++    if (!direct)
+     {
+-        if (spec_copy.size() > 0 && spec_copy[0] == ':')
++        if (parse_host_port(spec_copy, host, sizeof(host), &port) < 0)
+         {
+-            std::string p = "0";
+-            p += spec_copy;
+-            if (parse_host_port(p, host, sizeof(host), &port) < 0)
++            if (spec_copy.size() > 0 && spec_copy[0] == ':')
++            {
++                std::string p = "0";
++                p += spec_copy;
++                if (parse_host_port(p, host, sizeof(host), &port) < 0)
++                {
++                    return -EINVAL;
++                }
++            }
++            else
+             {
+                 return -EINVAL;
+             }
+         }
+-        else
++
++        fd = socket(AF_INET, SOCK_DGRAM, 0);
++        if (fd < 0)
+         {
++            return -errno;
++        }
++
++        sockaddr_in addr {};
++        addr.sin_family = AF_INET;
++        addr.sin_port = htons(static_cast<uint16_t>(port));
++        if (resolve_ipv4_bind_addr(host, true, &addr.sin_addr) < 0)
++        {
++            ::close(fd);
+             return -EINVAL;
+         }
+-    }
+ 
+-    const int fd = socket(AF_INET, SOCK_DGRAM, 0);
+-    if (fd < 0)
+-    {
+-        return -errno;
+-    }
++        if (bind(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0)
++        {
++            const int err = errno;
++            std::fprintf(stderr, "stream_receiver: bind %s:%d failed: %s\n", host, port,
++                         std::strerror(err));
++            ::close(fd);
++            return -err;
++        }
+ 
+-    sockaddr_in addr {};
+-    addr.sin_family = AF_INET;
+-    addr.sin_port = htons(static_cast<uint16_t>(port));
+-    if (resolve_ipv4_bind_addr(host, true, &addr.sin_addr) < 0)
+-    {
+-        ::close(fd);
+-        return -EINVAL;
+-    }
++        constexpr int k_sock_buf = 16 * 1024 * 1024;
++        (void)setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &k_sock_buf, sizeof(k_sock_buf));
+ 
+-    if (bind(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0)
+-    {
+-        const int err = errno;
+-        std::fprintf(stderr, "stream_receiver: bind %s:%d failed: %s\n", host, port,
+-                     std::strerror(err));
+-        ::close(fd);
+-        return -err;
+     }
+ 
+-    constexpr int k_sock_buf = 16 * 1024 * 1024;
+-    (void)setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &k_sock_buf, sizeof(k_sock_buf));
+-
+     uint32_t new_session = 0;
+     {
+         std::random_device rd;
+@@ -605,7 +639,8 @@ int stream_receiver::open()
+         stopping = false;
+     }
+ 
+-    std::fprintf(stderr, "stream_receiver: listen %s:%d\n", host, port);
++    if (direct) std::fprintf(stderr, "stream_receiver: in-process datagrams\n");
++    else std::fprintf(stderr, "stream_receiver: listen %s:%d\n", host, port);
+     return 0;
+ }
+ 
+diff --git a/src/components/stream_receiver.hpp b/src/components/stream_receiver.hpp
+index 8b2e5b7..db998ce 100644
+--- a/src/components/stream_receiver.hpp
++++ b/src/components/stream_receiver.hpp
+@@ -7,6 +7,8 @@
+ #endif
+ 
+ #include <atomic>
++#include <functional>
++#include <optional>
+ #include <condition_variable>
+ #include <cstdint>
+ #include <deque>
+@@ -43,6 +45,11 @@ public:
+ 
+     [[nodiscard]] std::string name() const override;
+     int  open() override;
++    // Optional in-process datagrams. Callbacks are immutable while open and
++    // must be nonblocking; the receive worker owns FEC and reverse reports.
++    using datagram_receive = std::function<std::optional<bfc::shared_sized_buffer>()>;
++    using datagram_send = std::function<bool(const uint8_t *, size_t)>;
++    int set_datagram_transport(datagram_receive receive, datagram_send send);
+     void close() override;
+     int output(component_pdu &out) override;
+ 
+@@ -54,7 +61,8 @@ private:
+     void recv_thread_main();
+     void stop_recv_thread();
+     /* Returns true when the datagram is valid stream media (telemetry peer update). */
+-    bool ingest_datagram(const uint8_t *data, size_t len);
++    bool ingest_datagram(const uint8_t *data, size_t len,
++                         const bfc::shared_sized_buffer *owner = nullptr);
+     void account_payloads_locked(const fec_rx_payload_list &payloads, size_t max_app_bytes);
+     void enqueue_payloads(fec_rx_payload_list *payloads, size_t max_app_bytes);
+     void enqueue_payload_buffer(bfc::shared_sized_buffer &&payload, size_t max_app_bytes,
+@@ -65,6 +73,8 @@ private:
+     mutable std::mutex mu;
+     bool               opened = false;
+ 
++    datagram_receive queue_receive;
++    datagram_send queue_send;
+     std::string listen_spec;
+     int         max_datagram = 1472;
+     int         recv_fd = -1;
+diff --git a/src/core/rs_block_erasure.cpp b/src/core/rs_block_erasure.cpp
+index a43b60f..2ac1150 100644
+--- a/src/core/rs_block_erasure.cpp
++++ b/src/core/rs_block_erasure.cpp
+@@ -9,6 +9,13 @@
+ #include <utility>
+ #include <cstring>
+ #include <random>
++#include <new>
++#ifdef ESP_PLATFORM
++#include "sdkconfig.h"
++#ifdef CONFIG_VSTREAMER_RX_PSRAM
++#include "esp_heap_caps.h"
++#endif
++#endif
+ 
+ extern "C"
+ {
+@@ -311,11 +318,11 @@ int vstreamer::rs_block_erasure::gen_decode_matrix(int k, int n,
+                                         const uint8_t* encode_matrix,
+                                         const uint8_t* err_list, int nerrs,
+                                         uint8_t* decode_matrix,
+-                                        uint8_t* decode_index)
++                                        uint8_t* decode_index, int output_errors)
+ {
+     if (encode_matrix == nullptr || err_list == nullptr ||
+         decode_matrix == nullptr || decode_index == nullptr || k < 1 ||
+-        n <= k)
++        n <= k || output_errors < 1 || output_errors > nerrs)
+     {
+         return -1;
+     }
+@@ -351,7 +358,7 @@ int vstreamer::rs_block_erasure::gen_decode_matrix(int k, int n,
+     {
+         return -1;
+     }
+-    for (int e = 0; e < nerrs; e++)
++    for (int e = 0; e < output_errors; e++)
+     {
+         const int idx = err_list[e];
+         if (idx < k)
+@@ -430,43 +437,40 @@ bool vstreamer::rs_block_erasure::decode_block(
+     }
+     shard_len = align_shard(shard_len);
+ 
+-    std::array<uint8_t, k_max_n>              have {};
+-    std::array<std::vector<uint8_t>, k_max_n> owned {};
+-    for (const auto& kv : frags)
+-    {
+-        const int idx = kv.first;
+-        have[static_cast<size_t>(idx)] = 1;
+-        const uint8_t* body = kv.second.u8() + k_header_len;
+-        const size_t   body_len = kv.second.size() - k_header_len;
+-        if (body_len < shard_len)
+-        {
+-            owned[static_cast<size_t>(idx)].assign(body, body + body_len);
+-            owned[static_cast<size_t>(idx)].resize(shard_len, 0);
+-        }
+-    }
+-    for (int i = sdu_n; i < k; i++)
+-    {
+-        if (frags.find(i) != frags.end())
+-        {
+-            continue;
+-        }
+-        have[static_cast<size_t>(i)] = 1;
+-        owned[static_cast<size_t>(i)].assign(shard_len, 0);
+-    }
+-
+-    const auto row_ref = [&](int idx) -> const std::vector<uint8_t>& {
+-        if (!owned[static_cast<size_t>(idx)].empty())
+-        {
+-            return owned[static_cast<size_t>(idx)];
+-        }
+-        const bfc::shared_sized_buffer& shard = frags.at(idx);
+-        owned[static_cast<size_t>(idx)].assign(shard.u8() + k_header_len,
+-                                                shard.u8() + shard.size());
+-        if (owned[static_cast<size_t>(idx)].size() < shard_len)
+-        {
+-            owned[static_cast<size_t>(idx)].resize(shard_len, 0);
++    std::array<uint8_t, k_max_n> have {};
++    // Full rows remain immutable views. Allocate padding only for source rows
++    // actually selected by the decoder, never on the complete-data fast path.
++    std::array<bfc::shared_sized_buffer, k_max_n> owned {};
++    const auto allocate_row = [shard_len] {
++#ifdef CONFIG_VSTREAMER_RX_PSRAM
++        auto *bytes = static_cast<std::byte*>(heap_caps_aligned_alloc(16, shard_len,
++            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
++        if (!bytes) throw std::bad_alloc();
++        return bfc::shared_sized_buffer::adopt(bytes, shard_len, shard_len,
++            [](std::byte *p) { heap_caps_free(p); });
++#else
++        auto storage = bfc::shared_sized_buffer::allocate(shard_len + 15);
++        storage.resize(shard_len + 15);
++        const size_t offset = (16 - (reinterpret_cast<uintptr_t>(storage.u8()) & 15)) & 15;
++        return storage.subview(offset, shard_len);
++#endif
++    };
++    for (const auto& kv : frags) have[static_cast<size_t>(kv.first)] = 1;
++    for (int i = sdu_n; i < k; ++i) have[static_cast<size_t>(i)] = 1;
++    const auto row_ptr = [&](int idx) -> const uint8_t* {
++        const auto received = frags.find(idx);
++        const size_t body_len = received == frags.end() ? 0
++            : received->second.size() - k_header_len;
++        const uint8_t* body = received == frags.end() ? nullptr
++            : received->second.u8() + k_header_len;
++        if (body_len == shard_len) return body;
++        auto &padded = owned[static_cast<size_t>(idx)];
++        if (padded.empty()) {
++            padded = allocate_row();
++            if (body_len) std::memcpy(padded.u8(), body, body_len);
++            std::memset(padded.u8() + body_len, 0, shard_len - body_len);
+         }
+-        return owned[static_cast<size_t>(idx)];
++        return padded.u8();
+     };
+ 
+     bool have_all_systematic = true;
+@@ -479,43 +483,41 @@ bool vstreamer::rs_block_erasure::decode_block(
+         }
+     }
+ 
+-    std::vector<std::vector<uint8_t>> data_copy(static_cast<size_t>(k));
++    std::vector<bfc::shared_sized_buffer> recovered_rows(static_cast<size_t>(k));
+     int                               rec = 0;
+     if (!have_all_systematic)
+     {
+-        for (int i = 0; i < k; i++)
+-        {
+-            if (have[static_cast<size_t>(i)])
+-            {
+-                data_copy[static_cast<size_t>(i)] = row_ref(i);
+-            }
+-        }
+         uint8_t err_list[k_max_n];
+         int     nerrs = 0;
++        int     data_errors = 0;
+         for (int i = 0; i < n; i++)
+         {
+             if (!have[static_cast<size_t>(i)])
+             {
+                 err_list[nerrs++] = static_cast<uint8_t>(i);
++                if (i < k) ++data_errors;
+             }
+         }
+         if (nerrs > parity)
+         {
+             return false;
+         }
+-        std::vector<uint8_t> decode_matrix(static_cast<size_t>(nerrs) *
++        // The complete erasure list selects k available source rows, but
++        // only its missing-data prefix needs reconstruction. Parity outputs
++        // are never delivered and must not consume decoder CPU or memory.
++        std::vector<uint8_t> decode_matrix(static_cast<size_t>(data_errors) *
+                                            static_cast<size_t>(k));
+         uint8_t decode_index[k_max_n];
+         if (gen_decode_matrix(k, n, encode_matrix, err_list, nerrs, decode_matrix.data(),
+-                              decode_index) != 0)
++                              decode_index, data_errors) != 0)
+         {
+             return false;
+         }
+         std::vector<uint8_t>              decode_tbls(static_cast<size_t>(k) *
+-                                                      static_cast<size_t>(nerrs) * 32);
++                                                      static_cast<size_t>(data_errors) * 32);
+         std::vector<unsigned char*>       src_ptrs(static_cast<size_t>(k));
+-        std::vector<std::vector<uint8_t>> recover(static_cast<size_t>(nerrs));
+-        std::vector<unsigned char*>       rec_ptrs(static_cast<size_t>(nerrs));
++        std::vector<bfc::shared_sized_buffer> recover(static_cast<size_t>(data_errors));
++        std::vector<unsigned char*>       rec_ptrs(static_cast<size_t>(data_errors));
+         for (int i = 0; i < k; i++)
+         {
+             const int idx = decode_index[i];
+@@ -524,22 +526,22 @@ bool vstreamer::rs_block_erasure::decode_block(
+                 return false;
+             }
+             src_ptrs[static_cast<size_t>(i)] =
+-                const_cast<unsigned char*>(row_ref(idx).data());
++                const_cast<unsigned char*>(row_ptr(idx));
+         }
+-        for (int i = 0; i < nerrs; i++)
++        for (int i = 0; i < data_errors; i++)
+         {
+-            recover[static_cast<size_t>(i)].assign(shard_len, 0);
+-            rec_ptrs[static_cast<size_t>(i)] = recover[static_cast<size_t>(i)].data();
++            recover[static_cast<size_t>(i)] = allocate_row();
++            rec_ptrs[static_cast<size_t>(i)] = recover[static_cast<size_t>(i)].u8();
+         }
+-        ec_init_tables_base(k, nerrs, decode_matrix.data(), decode_tbls.data());
+-        VSTREAMER_EC_ENCODE(static_cast<int>(shard_len), k, nerrs, decode_tbls.data(),
++        ec_init_tables_base(k, data_errors, decode_matrix.data(), decode_tbls.data());
++        VSTREAMER_EC_ENCODE(static_cast<int>(shard_len), k, data_errors, decode_tbls.data(),
+                             src_ptrs.data(), rec_ptrs.data());
+-        for (int i = 0; i < nerrs; i++)
++        for (int i = 0; i < data_errors; i++)
+         {
+             const int idx = err_list[i];
+             if (idx < k)
+             {
+-                data_copy[static_cast<size_t>(idx)] = std::move(recover[static_cast<size_t>(i)]);
++                recovered_rows[static_cast<size_t>(idx)] = std::move(recover[static_cast<size_t>(i)]);
+                 rec++;
+             }
+         }
+@@ -548,46 +550,21 @@ bool vstreamer::rs_block_erasure::decode_block(
+     payloads->clear();
+     for (int i = 0; i < k; i++)
+     {
+-        if (have_all_systematic)
++        if (i >= sdu_n) continue; // Known empty tail rows are not application payloads.
++        const auto received = frags.find(i);
++        if (received != frags.end())
+         {
+-            if (!have[static_cast<size_t>(i)])
+-            {
+-                continue;
+-            }
+-            if (frags.find(i) != frags.end())
+-            {
+-                bfc::shared_sized_buffer app;
+-                if (!frag_to_app(frags.at(i), &app))
+-                {
+-                    return false;
+-                }
+-                if (app.empty())
+-                {
+-                    continue;
+-                }
+-                payloads->push_back(std::move(app));
+-                continue;
+-            }
+-            const std::vector<uint8_t>& row = owned[static_cast<size_t>(i)];
+-            if (row.size() < k_len_prefix)
+-            {
+-                return false;
+-            }
+-            const uint16_t orig_len = load_be16(row.data());
+-            if (orig_len == 0)
+-            {
+-                continue;
+-            }
+-            payloads->push_back(
+-                bfc::shared_sized_buffer::copy_from(row.data() + k_len_prefix, orig_len));
++            bfc::shared_sized_buffer app;
++            if (!frag_to_app(received->second, &app)) return false;
++            if (!app.empty()) payloads->push_back(std::move(app));
+             continue;
+         }
+-        const std::vector<uint8_t>& row = data_copy[static_cast<size_t>(i)];
++        const auto& row = recovered_rows[static_cast<size_t>(i)];
+         if (row.empty() || row.size() < k_len_prefix)
+         {
+             return false;
+         }
+-        const uint16_t orig_len = load_be16(row.data());
++        const uint16_t orig_len = load_be16(row.u8());
+         if (orig_len == 0)
+         {
+             continue;
+@@ -596,7 +573,7 @@ bool vstreamer::rs_block_erasure::decode_block(
+         {
+             return false;
+         }
+-        payloads->push_back(bfc::shared_sized_buffer::copy_from(row.data() + k_len_prefix, orig_len));
++        payloads->push_back(row.subview(k_len_prefix, orig_len));
+     }
+     if (recovered != nullptr)
+     {
+diff --git a/src/core/rs_block_erasure.hpp b/src/core/rs_block_erasure.hpp
+index a5c5e51..453d2fe 100644
+--- a/src/core/rs_block_erasure.hpp
++++ b/src/core/rs_block_erasure.hpp
+@@ -59,7 +59,11 @@ public:
+     static constexpr int k_max_hi_block_id_deviation = 1024;
+     static constexpr int k_spread_cap_ms = 250;
+     /* Floor of the deadline margin: scheduling jitter on top of the measured arrival jitter. */
+-    static constexpr int k_deadline_margin_min_ms = 5;
++#ifndef VSTREAMER_RX_DEADLINE_MARGIN_MIN_MS
++#define VSTREAMER_RX_DEADLINE_MARGIN_MIN_MS 5
++#endif
++    static constexpr int k_deadline_margin_min_ms = VSTREAMER_RX_DEADLINE_MARGIN_MIN_MS;
++    static_assert(k_deadline_margin_min_ms >= 5 && k_deadline_margin_min_ms <= 100);
+ 
+     using clock_fn = std::function<std::chrono::steady_clock::time_point()>;
+     /* Replaces steady_clock::now() (tests). */
+@@ -266,7 +270,7 @@ private:
+     std::chrono::steady_clock::time_point now() const;
+     static int gen_decode_matrix(int k, int n, const uint8_t* encode_matrix,
+                                  const uint8_t* err_list, int nerrs,
+-                                 uint8_t* decode_matrix, uint8_t* decode_index);
++                                 uint8_t* decode_matrix, uint8_t* decode_index, int output_errors);
+ 
+     bool active = false;
+     int  cfg_k = 0;

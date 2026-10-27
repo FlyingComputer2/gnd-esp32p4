@@ -40,7 +40,7 @@ The app retains the existing two OTA partitions and Ethernet HTTP OTA support.
 Normal C6 firmware is unchanged. Connect Android in USB host/OTG mode to the
 board's **High Speed USB (USB3)** port; use CH340 for flash and logs.
 
-L3 uses the local SDIO proxy through loopback UDP 22/9000. Its video upstream
+L3 uses the local SDIO proxy through in-process radio queues; management uses loopback UDP 22. Its video upstream
 index is 1, TX bus d4, RX bus c3, domain 0xB00B, channel 1, OFDM_24M, 15 dBm.
 These must match the rover (with buses swapped). Video has no manager-level FEC;
 vstreamer's FEC terminates at the ground P4; P4 returns receiver feedback. The manager console is bound to
@@ -68,10 +68,10 @@ published its video transport. `GROUND_USB channel=...` reports local counters.
 The current boot does not automatically restart the manager. Backend failure
 invalidates an open USB session; HTTP OTA stays available over Ethernet.
 
-Host tests cover P4 FEC recovery and feedback, identical RTP output on both
+Host tests cover P4 FEC recovery and feedback over UDP and direct queues, ordered retry after Ethernet TX backpressure, identical RTP output on both
 branches, queue isolation, and Android fragmented IDR reconstruction. Hardware USB
 enumeration, live video, power delivery and sustained latency still need a
-P4/phone bench run. No hardware has been flashed by this change.
+P4/phone bench run. Live hardware validation is recorded separately from host test results.
 
 ## Board notes
 

@@ -13,6 +13,14 @@ foreach(dep vstreamer bfc isa-l)
         FetchContent_Populate(${dep})
     endif()
 endforeach()
+# Direct app datagrams avoid lwIP loopback mailboxes on the embedded RX path.
+execute_process(COMMAND git apply --reverse --check ${CMAKE_CURRENT_LIST_DIR}/../../patches/vstreamer-datagram-transport.patch
+    WORKING_DIRECTORY ${vstreamer_SOURCE_DIR} RESULT_VARIABLE transport_patch_check
+    OUTPUT_QUIET ERROR_QUIET)
+if(NOT transport_patch_check EQUAL 0)
+    execute_process(COMMAND git apply ${CMAKE_CURRENT_LIST_DIR}/../../patches/vstreamer-datagram-transport.patch
+        WORKING_DIRECTORY ${vstreamer_SOURCE_DIR} COMMAND_ERROR_IS_FATAL ANY)
+endif()
 set(ENABLE_STREAM_RECEIVER ON)
 include(${vstreamer_SOURCE_DIR}/cmake/vstreamer_sources.cmake)
 list(TRANSFORM VSTREAMER_SOURCES PREPEND ${vstreamer_SOURCE_DIR}/)
@@ -31,3 +39,58 @@ target_include_directories(video_test PRIVATE ../../components/ground_video/incl
 target_link_libraries(video_test PRIVATE video_core pthread)
 enable_testing()
 add_test(NAME video_test COMMAND video_test)
+add_test(NAME video_queue_test COMMAND video_test queue)
+
+# Exercise the real Config::validate path used by firmware startup, including
+# the shared validate_upstreams pass (USB/FEC tests do not construct Config).
+FetchContent_Declare(winject_l3 GIT_REPOSITORY https://github.com/winject-wireless/winject-l3.git
+    GIT_TAG fb3eea11d3edc81ce39287a8fd5c77e3d43d41f1)
+FetchContent_GetProperties(winject_l3)
+if(NOT winject_l3_POPULATED)
+    FetchContent_Populate(winject_l3)
+endif()
+if(NOT EXISTS ${winject_l3_SOURCE_DIR}/src/manager/endpoint/UpstreamQueue.h)
+    execute_process(COMMAND git apply ${CMAKE_CURRENT_SOURCE_DIR}/../../patches/winject-l3-upstream-queue.patch
+        WORKING_DIRECTORY ${winject_l3_SOURCE_DIR} COMMAND_ERROR_IS_FATAL ANY)
+endif()
+# A cached dependency may contain an older version of this compatibility patch.
+execute_process(COMMAND git apply --reverse --check ${CMAKE_CURRENT_SOURCE_DIR}/../../patches/winject-l3-upstream-queue.patch
+    WORKING_DIRECTORY ${winject_l3_SOURCE_DIR} RESULT_VARIABLE queue_patch_check
+    OUTPUT_QUIET ERROR_QUIET)
+if(NOT queue_patch_check EQUAL 0)
+    message(FATAL_ERROR "L3 compatibility patch is stale; remove ${winject_l3_SOURCE_DIR} and reconfigure")
+endif()
+set(manager ${winject_l3_SOURCE_DIR}/src/manager)
+add_executable(config_test config_test.cpp
+    ${manager}/Config.cpp ${manager}/utils/NetUtil.cpp ${manager}/radio/PhyAirtime.cpp
+    ${manager}/fec/vendor/rs_block_erasure.cpp
+    ${manager}/fec/vendor/rs_block_erasure_rx.cpp
+    ${manager}/fec/vendor/rs_encode_scalar.cpp)
+target_include_directories(config_test PRIVATE ${manager} ${isa-l_SOURCE_DIR}/include)
+target_link_libraries(config_test PRIVATE video_core)
+add_test(NAME config_test COMMAND config_test)
+
+target_compile_definitions(video_core PUBLIC VSTREAMER_RX_DEADLINE_MARGIN_MIN_MS=40)
+add_executable(fec_schedule_test fec_schedule_test.cpp)
+target_link_libraries(fec_schedule_test PRIVATE video_core)
+add_test(NAME fec_schedule_test COMMAND fec_schedule_test)
+add_executable(fec_decode_test fec_decode_test.cpp)
+target_link_libraries(fec_decode_test PRIVATE video_core)
+add_test(NAME fec_decode_test COMMAND fec_decode_test)
+
+add_executable(owned_ingress_test owned_ingress_test.cpp)
+target_link_libraries(owned_ingress_test PRIVATE video_core)
+add_test(NAME owned_ingress_test COMMAND owned_ingress_test)
+
+add_library(l3_transport_core STATIC
+    ${manager}/endpoint/Upstream.cpp ${manager}/endpoint/UpstreamStats.cpp
+    ${manager}/endpoint/QueueUpstream.cpp ${manager}/endpoint/DatagramAir.cpp
+    ${manager}/fec/FecTx.cpp ${manager}/fec/FecRx.cpp
+    ${manager}/fec/vendor/rs_block_erasure.cpp
+    ${manager}/fec/vendor/rs_block_erasure_rx.cpp
+    ${manager}/fec/vendor/rs_encode_scalar.cpp ${manager}/utils/NetUtil.cpp)
+target_include_directories(l3_transport_core PUBLIC ${manager} ${isa-l_SOURCE_DIR}/include)
+target_link_libraries(l3_transport_core PUBLIC video_core)
+add_executable(l3_owned_queue_test l3_owned_queue_test.cpp)
+target_link_libraries(l3_owned_queue_test PRIVATE l3_transport_core)
+add_test(NAME l3_owned_queue_test COMMAND l3_owned_queue_test)

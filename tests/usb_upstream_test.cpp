@@ -33,6 +33,17 @@ int main()
     const uint8_t expected[] = {0x52, 0x47, 0x50, 0x34, 2,    4,    0,    0,    255, 255, 3, 0,
                                 4,    3,    2,    1,    0x44, 0x33, 0x22, 0x11, 1,   2,   3};
     assert(golden == std::vector<uint8_t>(std::begin(expected), std::end(expected)));
+    // Direct DATA framing must preserve every byte, including channel 65535,
+    // maximum-size packets, empty control payloads and rejected oversized data.
+    for (size_t size : {size_t(0),size_t(1),size_t(1445),max_payload}) {
+        std::vector<uint8_t> payload(size);
+        for(size_t i=0;i<size;++i) payload[i]=uint8_t(i);
+        assert(encode(data,65535,7,0xffffffff,payload.data(),size)==
+               encode({data,65535,7,0xffffffff,payload}));
+        if(size) assert(decode(encode(data,65535,7,0xffffffff,payload.data(),size),7).payload==payload);
+    }
+    assert(encode(data,0,7,1,nullptr,1).empty());
+    assert(encode(data,0,7,1,expected,max_payload+1).empty());
     for (uint16_t id : {0, 1, 2, 255, 256, 32767, 32768, 65535})
     {
         auto bytes = encode({data, id, 7, 1, {1, 2, 3}});

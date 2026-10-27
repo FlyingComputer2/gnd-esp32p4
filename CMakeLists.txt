@@ -19,6 +19,13 @@ if(NOT EXISTS ${winject_l3_SOURCE_DIR}/src/manager/endpoint/UpstreamQueue.h)
     execute_process(COMMAND git apply ${CMAKE_CURRENT_LIST_DIR}/patches/winject-l3-upstream-queue.patch
                     WORKING_DIRECTORY ${winject_l3_SOURCE_DIR} COMMAND_ERROR_IS_FATAL ANY)
 endif()
+# A cached dependency may contain an older version of this compatibility patch.
+execute_process(COMMAND git apply --reverse --check ${CMAKE_CURRENT_LIST_DIR}/patches/winject-l3-upstream-queue.patch
+    WORKING_DIRECTORY ${winject_l3_SOURCE_DIR} RESULT_VARIABLE queue_patch_check
+    OUTPUT_QUIET ERROR_QUIET)
+if(NOT queue_patch_check EQUAL 0)
+    message(FATAL_ERROR "L3 compatibility patch is stale; remove ${winject_l3_SOURCE_DIR} and reconfigure")
+endif()
 # Declare the shared BFC pin before the older proxy declares it.
 include(${winject_l3_SOURCE_DIR}/src/BfcFetch.cmake)
 
@@ -30,6 +37,14 @@ FetchContent_GetProperties(winject_sdio_proxy)
 if(NOT winject_sdio_proxy_POPULATED)
     FetchContent_Populate(winject_sdio_proxy)
 endif()
+# Keep the original radio ownership copy in PSRAM when ground video retains it.
+execute_process(COMMAND git apply --reverse --check ${CMAKE_CURRENT_LIST_DIR}/patches/proxy-psram-packets.patch
+    WORKING_DIRECTORY ${winject_sdio_proxy_SOURCE_DIR} RESULT_VARIABLE psram_patch_check
+    OUTPUT_QUIET ERROR_QUIET)
+if(NOT psram_patch_check EQUAL 0)
+    execute_process(COMMAND git apply ${CMAKE_CURRENT_LIST_DIR}/patches/proxy-psram-packets.patch
+        WORKING_DIRECTORY ${winject_sdio_proxy_SOURCE_DIR} COMMAND_ERROR_IS_FATAL ANY)
+endif()
 include(${winject_sdio_proxy_SOURCE_DIR}/cmake/winject_sdio_proxy.cmake)
 
 FetchContent_Declare(vstreamer
@@ -38,6 +53,14 @@ FetchContent_Declare(vstreamer
 FetchContent_GetProperties(vstreamer)
 if(NOT vstreamer_POPULATED)
     FetchContent_Populate(vstreamer)
+endif()
+# Direct app datagrams avoid lwIP loopback mailboxes on the embedded RX path.
+execute_process(COMMAND git apply --reverse --check ${CMAKE_CURRENT_LIST_DIR}/patches/vstreamer-datagram-transport.patch
+    WORKING_DIRECTORY ${vstreamer_SOURCE_DIR} RESULT_VARIABLE transport_patch_check
+    OUTPUT_QUIET ERROR_QUIET)
+if(NOT transport_patch_check EQUAL 0)
+    execute_process(COMMAND git apply ${CMAKE_CURRENT_LIST_DIR}/patches/vstreamer-datagram-transport.patch
+        WORKING_DIRECTORY ${vstreamer_SOURCE_DIR} COMMAND_ERROR_IS_FATAL ANY)
 endif()
 # Receive-only integration: no camera, hardware encoder, SDL or TX pipeline.
 FetchContent_Declare(isa-l GIT_REPOSITORY https://github.com/intel/isa-l.git
