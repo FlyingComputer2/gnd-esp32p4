@@ -10,12 +10,18 @@ namespace rover {
 // Each consumer owns a bounded queue; eviction in one cannot consume the other.
 class VideoFanout {
 public:
-    static constexpr size_t capacity = 32;
+    // USB credits can pause delivery across codec/rate transitions. Keep
+    // a bounded burst reserve without growing the Ethernet branch.
+    static constexpr size_t capacity = 512;
+    // The recovery loop can emit 64 packets in one scheduling turn. Ethernet
+    // must absorb that burst even when its lower-priority task has not run yet.
+    static constexpr size_t multicast_capacity = 128;
     void push(const bfc::shared_sized_buffer &packet) {
         std::lock_guard<std::mutex> lock(mu_);
         for (size_t i = 0; i < queues_.size(); ++i) {
             auto &q = queues_[i];
-            if (q.size() == capacity) { q.pop_front(); ++drops_[i]; }
+            const size_t limit = i == 0 ? capacity : multicast_capacity;
+            if (q.size() == limit) { q.pop_front(); ++drops_[i]; }
             q.push_back(packet);
         }
     }

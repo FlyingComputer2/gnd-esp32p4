@@ -5,6 +5,10 @@
 
 #include "WinjectL3.h"
 #include "esp_eth.h"
+#include "esp_heap_caps.h"
+#include "esp_timer.h"
+#include <vector>
+#include <string>
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
@@ -17,8 +21,71 @@
 #include "winject_proxy.h"
 #include <arpa/inet.h>
 #include <pthread.h>
+#include <bfc/cv_reactor.hpp>
+#include <thread>
 
 static const char *TAG = "rover_ground";
+namespace {
+constexpr const char *radio_tx_name = "ground-radio-tx";
+constexpr const char *radio_rx_name = "ground-radio-rx";
+constexpr const char *radio_reactor_name = "ground-radio";
+std::shared_ptr<winject::ReactiveLossyQueue> radio_tx, radio_rx;
+std::shared_ptr<bfc::cv_reactor<>> radio_reactor;
+void *run_radio_reactor(void *) { radio_reactor->run(); return nullptr; }
+void print_cpu() {
+    struct Previous { TaskHandle_t task; uint32_t runtime; };
+    static std::vector<Previous> previous;
+    static int64_t previous_us = 0;
+    std::vector<TaskStatus_t> tasks(uxTaskGetNumberOfTasks() + 8);
+    configRUN_TIME_COUNTER_TYPE total = 0;
+    const auto count = uxTaskGetSystemState(tasks.data(), tasks.size(), &total);
+    const auto now = esp_timer_get_time();
+    const double delta = double(now - previous_us);
+    std::vector<Previous> next;
+    std::string line;
+    for (UBaseType_t i = 0; i < count; ++i) {
+        const auto &task = tasks[i];
+        const uint32_t runtime = task.ulRunTimeCounter;
+        next.push_back({task.xHandle, runtime});
+        if (!previous_us) continue;
+        for (const auto &old : previous) if (old.task == task.xHandle) {
+            const auto percent = 100.0 * uint32_t(runtime - old.runtime) / delta;
+            if (percent >= 0.5 || std::string(task.pcTaskName).find("IDLE") == 0) {
+                char entry[80];
+                snprintf(entry, sizeof(entry), " %s(p%u)=%.1f%%", task.pcTaskName,
+                         unsigned(task.uxCurrentPriority), percent);
+                line += entry;
+            }
+            break;
+        }
+    }
+    previous = std::move(next); previous_us = now;
+    printf("GROUND_CPU%s\n", line.c_str());
+}
+
+void start_radio_queues() {
+    radio_tx = std::make_shared<winject::ReactiveLossyQueue>();
+    radio_rx = std::make_shared<winject::ReactiveLossyQueue>();
+    radio_tx->set_capacity(256);
+    radio_rx->set_capacity(256);
+    radio_reactor = std::make_shared<bfc::cv_reactor<>>();
+    using Registry = bfc::cv_reactor_circular_lossy_queue_registry<bfc::shared_sized_buffer>;
+    ESP_ERROR_CHECK(Registry::get_instance().add(radio_tx_name, radio_tx) &&
+                    Registry::get_instance().add(radio_rx_name, radio_rx) &&
+                    bfc::cv_reactor_registry::get_instance().add(radio_reactor_name, radio_reactor)
+                    ? ESP_OK : ESP_FAIL);
+    auto cfg = esp_pthread_get_default_config();
+    cfg.stack_size = 32768;
+    cfg.prio = 14;
+    cfg.pin_to_core = 0;
+    cfg.thread_name = "ground_radio";
+    ESP_ERROR_CHECK(esp_pthread_set_cfg(&cfg));
+    pthread_t thread;
+    ESP_ERROR_CHECK(pthread_create(&thread, nullptr, run_radio_reactor, nullptr) == 0 ? ESP_OK : ESP_FAIL);
+    pthread_detach(thread);
+}
+}
+
 
 #define ETH_PHY_ADDR 1
 #define ETH_PHY_RESET_GPIO 51
@@ -85,6 +152,9 @@ static void *l3_main(void *)
     cfg.radio_device.mplane.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     cfg.radio_device.dplane = cfg.radio_device.mplane;
     cfg.radio_device.dplane.sin_port = htons(9000);
+    cfg.radio_device.dplane_tx = radio_tx_name;
+    cfg.radio_device.dplane_rx = radio_rx_name;
+    cfg.radio_device.reactor = radio_reactor_name;
     cfg.radio_device.fcs = winject::RadioFcsConfig::signal;
     cfg.console_in = "127.0.0.1:2400";
     winject::UpstreamConfig video;
@@ -92,7 +162,7 @@ static void *l3_main(void *)
     video.mode = winject::UpstreamMode::queue;
     video.bus_tx = 0xd4;
     video.bus_rx = 0xc3;
-    video.rx_queue_capacity = 64;
+    video.rx_queue_capacity = 256;
     video.scheduler_budget = 4096;
     video.fec_type = winject::FecType::none; // vstreamer FEC terminates at the P4 receiver.
     cfg.upstreams.push_back(video);
@@ -128,7 +198,11 @@ extern "C" void app_main(void)
         ESP_LOGE(TAG, "Ethernet: %s", esp_err_to_name(err));
     }
 
+    start_radio_queues();
     winject_proxy_config_t cfg = WINJECT_PROXY_CONFIG_DEFAULT();
+    cfg.dplane_tx_queue = radio_tx_name;
+    cfg.dplane_rx_queue = radio_rx_name;
+    cfg.dplane_reactor = radio_reactor_name;
     err = winject_proxy_start(&cfg);
     if (err != ESP_OK)
     {
@@ -157,7 +231,12 @@ extern "C" void app_main(void)
         sdio_link_host_stats_t ls;
         winject_proxy_get_stats(&ps);
         usb_upstream_log_stats();
+        print_cpu();
         ground_video_log_stats();
+        printf("GROUND_HEAP internal=%u internal_largest=%u psram=%u\n",
+               unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+               unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+               unsigned(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
         sdio_link_host_get_stats(&ls);
         printf("GROUND_PROXY_STATS mreq=%" PRIu32 " mrep=%" PRIu32 " mdrop=%" PRIu32
                " ddown=%" PRIu32 " ddown_drop=%" PRIu32 " dup=%" PRIu32 " dup_nopeer=%" PRIu32

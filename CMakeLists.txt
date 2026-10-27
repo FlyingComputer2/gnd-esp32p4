@@ -19,6 +19,13 @@ if(NOT EXISTS ${winject_l3_SOURCE_DIR}/src/manager/endpoint/UpstreamQueue.h)
     execute_process(COMMAND git apply ${CMAKE_CURRENT_LIST_DIR}/patches/winject-l3-upstream-queue.patch
                     WORKING_DIRECTORY ${winject_l3_SOURCE_DIR} COMMAND_ERROR_IS_FATAL ANY)
 endif()
+# A cached dependency may contain an older version of this compatibility patch.
+execute_process(COMMAND git apply --reverse --check ${CMAKE_CURRENT_LIST_DIR}/patches/winject-l3-upstream-queue.patch
+    WORKING_DIRECTORY ${winject_l3_SOURCE_DIR} RESULT_VARIABLE queue_patch_check
+    OUTPUT_QUIET ERROR_QUIET)
+if(NOT queue_patch_check EQUAL 0)
+    message(FATAL_ERROR "L3 compatibility patch is stale; remove ${winject_l3_SOURCE_DIR} and reconfigure")
+endif()
 # Declare the shared BFC pin before the older proxy declares it.
 include(${winject_l3_SOURCE_DIR}/src/BfcFetch.cmake)
 
@@ -30,11 +37,19 @@ FetchContent_GetProperties(winject_sdio_proxy)
 if(NOT winject_sdio_proxy_POPULATED)
     FetchContent_Populate(winject_sdio_proxy)
 endif()
+# Keep the original radio ownership copy in PSRAM when ground video retains it.
+execute_process(COMMAND git apply --reverse --check ${CMAKE_CURRENT_LIST_DIR}/patches/proxy-psram-packets.patch
+    WORKING_DIRECTORY ${winject_sdio_proxy_SOURCE_DIR} RESULT_VARIABLE psram_patch_check
+    OUTPUT_QUIET ERROR_QUIET)
+if(NOT psram_patch_check EQUAL 0)
+    execute_process(COMMAND git apply ${CMAKE_CURRENT_LIST_DIR}/patches/proxy-psram-packets.patch
+        WORKING_DIRECTORY ${winject_sdio_proxy_SOURCE_DIR} COMMAND_ERROR_IS_FATAL ANY)
+endif()
 include(${winject_sdio_proxy_SOURCE_DIR}/cmake/winject_sdio_proxy.cmake)
 
 FetchContent_Declare(vstreamer
     GIT_REPOSITORY https://github.com/FlyingComputer2/vstreamer.git
-    GIT_TAG f4044615fe6857dc1a7dd3fdb8704b492d618caf)
+    GIT_TAG e4fd44853249b74113b76f4ff668d87c5b3b8deb)
 FetchContent_GetProperties(vstreamer)
 if(NOT vstreamer_POPULATED)
     FetchContent_Populate(vstreamer)

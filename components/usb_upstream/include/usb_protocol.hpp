@@ -35,22 +35,27 @@ struct Record
     uint32_t session, sequence;
     std::vector<uint8_t> payload;
 };
-inline std::vector<uint8_t> encode(const Record &r)
+// Build the final wire record directly from immutable payload storage.
+inline std::vector<uint8_t> encode(Kind kind, uint16_t channel, uint32_t session,
+                                  uint32_t sequence, const uint8_t *payload, size_t size)
 {
-    if (r.payload.size() > max_payload)
-        return {};
-    std::vector<uint8_t> out(header_size + r.payload.size());
+    if (size > max_payload || (size && !payload)) return {};
+    std::vector<uint8_t> out(header_size + size);
     memcpy(out.data(), "RGP4", 4);
     out[4] = 2;
-    out[5] = r.kind;
-    put16(out.data() + 8, r.channel);
-    put16(out.data() + 10, r.payload.size());
-    put32(out.data() + 12, r.session);
-    put32(out.data() + 16, r.sequence);
-    if (!r.payload.empty())
-        memcpy(out.data() + 20, r.payload.data(), r.payload.size());
+    out[5] = kind;
+    put16(out.data() + 8, channel);
+    put16(out.data() + 10, size);
+    put32(out.data() + 12, session);
+    put32(out.data() + 16, sequence);
+    if (size) memcpy(out.data() + header_size, payload, size);
     return out;
 }
+inline std::vector<uint8_t> encode(const Record &r)
+{
+    return encode(r.kind, r.channel, r.session, r.sequence, r.payload.data(), r.payload.size());
+}
+
 class Parser
 {
     std::array<uint8_t, header_size + max_payload> buf{};
