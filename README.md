@@ -78,8 +78,14 @@ P4/phone bench run. Live hardware validation is recorded separately from host te
 - **Silicon revision.** The module's P4 is rev v1.3. `sdkconfig.defaults` sets `CONFIG_ESP32P4_SELECTS_REV_LESS_V3` and `CONFIG_ESP32P4_REV_MIN_100`; without them the bootloader dies right after `entry 0x…` with `Illegal instruction`.
 - **USB.** Flash and console on the **CH340C** USB-C port (UART0, GPIO37/38, `/dev/ttyUSB*`), 921600 baud. Radio packets use the dedicated **High Speed USB** connector, USB3 in schematic sheet `5_USB&485`; the Full Speed USB / USB-Serial/JTAG connector is separate.
 - **Ethernet.** IP101, PHY address 1, reset GPIO51; the RMII pins are IDF 5.5's P4 EMAC defaults, so no pin config.
-- **C6 link.** SDIO slot 1, CLK 18, CMD 19, D0–D3 14–17, C6 `CHIP_PU` on GPIO54: the proxy's defaults.
-- **C6 boot strap.** On this board the C6's `IO9` reaches only JP1 pin 24 (pins 20/22/24/26 are the C6's `U0RXD`/`U0TXD`/`IO9`/`CHIP_PU`). The proxy drives it from **GPIO45** (LDO_VO4 at 3.3 V), so jumper **JP1 pin 24 → GPIO45**. Without it `/c6/download` does nothing, but normal boot still works.
+- **C6 wiring.** On this board the C6's `U0RXD`/`U0TXD`/`IO9`/`CHIP_PU` come out on JP1 pins 20/22/24/26 and are jumpered to the P4:
+
+  | C6 | JP1 | P4 | Notes |
+  |---|---|---|---|
+  | `U0RXD` / `U0TXD` | 20 / 22 | GPIO32 / GPIO33 | UART1 of [`tools/c6-uart-bridge`](tools/c6-uart-bridge) |
+  | `IO9` (boot strap) | 24 | GPIO45 | Powered by LDO_VO4 at 3.3 V; the proxy default. Without it `/c6/download` does nothing, but normal boot still works |
+  | `CHIP_PU` | 26 | GPIO54 | Proxy default |
+  | SDIO | — | slot 1: CLK 18, CMD 19, D0–D3 14–17 | Proxy default |
 - **Manual download mode** if auto-reset fails: hold SW1 (BOOT, GPIO35) → tap SW2 (RST) → release SW1. Bad firmware cannot brick the P4; do not run `espefuse`.
 
 ## Host verification
@@ -99,6 +105,13 @@ and invalid traffic. A PyUSB bench client is in `tools/usb-radio/smoke.py`.
 `/update/c6` goes over the winject SDIO link, so a C6 still running Guition's ESP-Hosted slave has to be flashed over its UART once. [`tools/c6-uart-bridge`](tools/c6-uart-bridge) is a P4 image that holds the C6 in its ROM downloader and bridges the CH340 port (UART0) to the C6's UART0 at 115200.
 
 Jumpers on JP1: **GPIO32 → pin 20 (C6 U0RXD)**, **GPIO33 → pin 22 (C6 U0TXD)**, **GPIO45 → pin 24 (C6 IO9)**.
+
+The bridge also builds for the rover's Waveshare ESP32-P4-WIFI6-DEV-KIT. There the C6 UART is wired the other way round (C6 U0TXD → GPIO32, U0RXD → GPIO33), and its boot strap is on GPIO22. The P4 is rev v3.x:
+
+```bash
+idf.py -B build-waveshare -D SDKCONFIG=build-waveshare/sdkconfig \
+  -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.waveshare" -p /dev/ttyACM0 flash
+```
 
 ```bash
 . ~/esp/esp-idf-v5.5.5/export.sh
