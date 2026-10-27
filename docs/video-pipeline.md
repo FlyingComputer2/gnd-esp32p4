@@ -17,7 +17,7 @@ This avoids spending most of a core reconstructing parity that is discarded.
 The P4 receiver uses a 40 ms minimum expiry margin for scheduler jitter.
 
 The radio proxy's existing borrowed-input ownership copy allocates packet
-payloads in PSRAM (`GROUND_VIDEO_PSRAM_PACKETS`). L3 queue delivery preserves
+payloads in PSRAM (`WINJECT_PROXY_DPLANE_PSRAM`). L3 queue delivery preserves
 that owner, and the direct FEC input uses subviews instead of copying packets
 again. Both fanout consumers treat recovered RTP as immutable. Socket input
 still copies its reusable receive buffer. Reconstructed rows are 16-byte aligned

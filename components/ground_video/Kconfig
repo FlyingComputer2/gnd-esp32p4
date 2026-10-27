@@ -9,15 +9,6 @@ config VSTREAMER_RS_PIE
         reconstruction. Startup compares it with the scalar reference using
         unaligned inputs and odd lengths; mismatches disable PIE at runtime.
 
-config GROUND_VIDEO_PSRAM_PACKETS
-    bool "Keep retained radio packet payloads in PSRAM"
-    depends on SPIRAM
-    default y
-    help
-        Allocate the proxy queue's existing packet ownership copy in PSRAM.
-        Retaining packets through FEC and both outputs then preserves internal
-        RAM for the USB/Ethernet drivers without adding another payload copy.
-
 config VSTREAMER_RX_PSRAM
     bool "Allocate FEC padding and recovered rows in PSRAM"
     depends on SPIRAM
