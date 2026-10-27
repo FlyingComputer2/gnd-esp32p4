@@ -49,18 +49,10 @@ include(${winject_sdio_proxy_SOURCE_DIR}/cmake/winject_sdio_proxy.cmake)
 
 FetchContent_Declare(vstreamer
     GIT_REPOSITORY https://github.com/FlyingComputer2/vstreamer.git
-    GIT_TAG f4044615fe6857dc1a7dd3fdb8704b492d618caf)
+    GIT_TAG 74db519187f716fb443b5fe546c2e947099e41c1)
 FetchContent_GetProperties(vstreamer)
 if(NOT vstreamer_POPULATED)
     FetchContent_Populate(vstreamer)
-endif()
-# Direct app datagrams avoid lwIP loopback mailboxes on the embedded RX path.
-execute_process(COMMAND git apply --reverse --check ${CMAKE_CURRENT_LIST_DIR}/patches/vstreamer-datagram-transport.patch
-    WORKING_DIRECTORY ${vstreamer_SOURCE_DIR} RESULT_VARIABLE transport_patch_check
-    OUTPUT_QUIET ERROR_QUIET)
-if(NOT transport_patch_check EQUAL 0)
-    execute_process(COMMAND git apply ${CMAKE_CURRENT_LIST_DIR}/patches/vstreamer-datagram-transport.patch
-        WORKING_DIRECTORY ${vstreamer_SOURCE_DIR} COMMAND_ERROR_IS_FATAL ANY)
 endif()
 # Receive-only integration: no camera, hardware encoder, SDL or TX pipeline.
 FetchContent_Declare(isa-l GIT_REPOSITORY https://github.com/intel/isa-l.git

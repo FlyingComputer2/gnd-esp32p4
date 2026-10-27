@@ -1,5 +1,5 @@
 #include "components/stream_receiver.hpp"
-#include "core/stream_header.hpp"
+#include "core/rs_block_erasure.hpp"
 #include <atomic>
 #include <cassert>
 #include <chrono>
@@ -11,21 +11,18 @@
 static void check(bool fec_enabled) {
     std::vector<uint8_t> app(1003);
     for (size_t i=0; i<app.size(); ++i) app[i]=uint8_t(i);
-    std::vector<uint8_t> payload=app;
-    if (fec_enabled) {
-        vstreamer::rs_block_erasure tx;
-        assert(tx.init(1,2,20,1441));
-        std::vector<std::vector<uint8_t>> air;
-        tx.push_app(app.data(),app.size(),&air);
-        assert(air.size()==2);
-        payload=air.front(); // Systematic row emits before parity is needed.
-    }
-    const size_t size=4+payload.size();
+    // fec none is a data-only stream (k = n = 1); with FEC the data shard leaves before parity.
+    vstreamer::rs_block_erasure tx;
+    assert(tx.init(1,fec_enabled?2:1,1445));
+    vstreamer::rs_block_erasure::tx_out air;
+    tx.push_app(app.data(),app.size(),&air);
+    assert(air.shards.size()==(fec_enabled?2u:1u));
+    const auto &shard=air.shards.front();
+    const size_t size=shard.size();
     auto *bytes=new std::byte[size];
     std::atomic<unsigned> released{0};
-    vstreamer::stream_header_write(reinterpret_cast<uint8_t*>(bytes),{1,fec_enabled,true,0});
-    std::memcpy(bytes+4,payload.data(),payload.size());
-    const auto *expected=reinterpret_cast<uint8_t*>(bytes)+4+(fec_enabled?7:0);
+    std::memcpy(bytes,shard.u8(),size);
+    const auto *expected=reinterpret_cast<uint8_t*>(bytes)+vstreamer::rs_block_erasure::k_data_header_len;
     std::deque<bfc::shared_sized_buffer> queue;
     std::mutex mu;
     queue.push_back(bfc::shared_sized_buffer::adopt(bytes,size,size,[&](std::byte *p){

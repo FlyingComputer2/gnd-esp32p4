@@ -3,7 +3,7 @@ project(ground_video_test LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 include(FetchContent)
 FetchContent_Declare(vstreamer GIT_REPOSITORY https://github.com/FlyingComputer2/vstreamer.git
-    GIT_TAG f4044615fe6857dc1a7dd3fdb8704b492d618caf)
+    GIT_TAG 74db519187f716fb443b5fe546c2e947099e41c1)
 FetchContent_Declare(bfc GIT_REPOSITORY https://github.com/therooftopprinz/BFC.git
     GIT_TAG 6c02a495d1a2cf4a8a13dfa6b25b342780527c89)
 FetchContent_Declare(isa-l GIT_REPOSITORY https://github.com/intel/isa-l.git GIT_TAG v2.31.1 GIT_SHALLOW TRUE)
@@ -13,14 +13,6 @@ foreach(dep vstreamer bfc isa-l)
         FetchContent_Populate(${dep})
     endif()
 endforeach()
-# Direct app datagrams avoid lwIP loopback mailboxes on the embedded RX path.
-execute_process(COMMAND git apply --reverse --check ${CMAKE_CURRENT_LIST_DIR}/../../patches/vstreamer-datagram-transport.patch
-    WORKING_DIRECTORY ${vstreamer_SOURCE_DIR} RESULT_VARIABLE transport_patch_check
-    OUTPUT_QUIET ERROR_QUIET)
-if(NOT transport_patch_check EQUAL 0)
-    execute_process(COMMAND git apply ${CMAKE_CURRENT_LIST_DIR}/../../patches/vstreamer-datagram-transport.patch
-        WORKING_DIRECTORY ${vstreamer_SOURCE_DIR} COMMAND_ERROR_IS_FATAL ANY)
-endif()
 set(ENABLE_STREAM_RECEIVER ON)
 include(${vstreamer_SOURCE_DIR}/cmake/vstreamer_sources.cmake)
 list(TRANSFORM VSTREAMER_SOURCES PREPEND ${vstreamer_SOURCE_DIR}/)

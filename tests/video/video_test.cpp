@@ -45,19 +45,20 @@ int main(int argc, char **) {
     while(packer.pending()) {
         int n=packer.pop_datagram(bytes,sizeof(bytes)); assert(n>0); rtp.emplace_back(bytes,bytes+n);
     }
-    vstreamer::rs_block_erasure fec; assert(fec.init(3,5,20,1441));
+    vstreamer::rs_block_erasure fec; assert(fec.init(3,5,1445));
     std::vector<std::vector<uint8_t>> shards;
+    vstreamer::rs_block_erasure::tx_out batch;
     for(auto &p:rtp) {
-        std::vector<std::vector<uint8_t>> batch; fec.push_app(p.data(),p.size(),&batch);
-        shards.insert(shards.end(),batch.begin(),batch.end());
+        fec.push_app(p.data(),p.size(),&batch);
+        for(auto &s:batch.shards) shards.emplace_back(s.u8(),s.u8()+s.size());
     }
-    std::vector<std::vector<uint8_t>> tail; fec.flush(&tail);
-    shards.insert(shards.end(),tail.begin(),tail.end());
+    fec.flush(&batch);
+    for(auto &s:batch.shards) shards.emplace_back(s.u8(),s.u8()+s.size());
     for(size_t i=0;i<shards.size();++i) {
-        if(i%5==0 && i+4<shards.size()) continue; // Recover one missing data shard per block.
-        std::vector<uint8_t> wire(4+shards[i].size());
-        vstreamer::stream_header_write(wire.data(),{uint16_t(i),true,true,0});
-        std::copy(shards[i].begin(),shards[i].end(),wire.begin()+4);
+        // Recover one missing data shard per block. Not the stream's first shard: the receiver
+        // starts its sequence at the first data shard it sees.
+        if(i%5==1 && i+3<shards.size()) continue;
+        const std::vector<uint8_t> &wire=shards[i]; // A media datagram is one FEC shard.
         if (direct) {
             std::lock_guard<std::mutex> lock(queue_mutex);
             input.push_back(bfc::shared_sized_buffer::copy_from(wire.data(), wire.size()));
