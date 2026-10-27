@@ -3,7 +3,7 @@ project(ground_video_test LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 include(FetchContent)
 FetchContent_Declare(vstreamer GIT_REPOSITORY https://github.com/FlyingComputer2/vstreamer.git
-    GIT_TAG 74db519187f716fb443b5fe546c2e947099e41c1)
+    GIT_TAG e4fd44853249b74113b76f4ff668d87c5b3b8deb)
 FetchContent_Declare(bfc GIT_REPOSITORY https://github.com/therooftopprinz/BFC.git
     GIT_TAG 6c02a495d1a2cf4a8a13dfa6b25b342780527c89)
 FetchContent_Declare(isa-l GIT_REPOSITORY https://github.com/intel/isa-l.git GIT_TAG v2.31.1 GIT_SHALLOW TRUE)
