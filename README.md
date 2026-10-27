@@ -47,9 +47,9 @@ vstreamer's FEC terminates at the ground P4; P4 returns receiver feedback. The m
 127.0.0.1:2400. Do not run a second Ethernet L3 manager against this radio:
 the underlying radio proxy has a single peer per plane.
 
-The pinned L3 release needs [a small compatibility patch](patches/winject-l3-upstream-queue.patch)
-to create/publish `UpstreamQueue` for queue app transports. CMake applies it to
-the fetched dependency. The video service consumes that actual L3-created object. USB channel 0 is a
+L3 creates the `UpstreamQueue` for the video upstream (no queue names in its
+config) and hands it over through `Config::on_upstream_queue`. The video service
+consumes that L3-created object. USB channel 0 is a
 local processed source with its own bounded queue, registered through
 `usb_upstream_register_source()`. Other services may still register L3 transports
 directly through `usb_upstream_register()`; duplicate IDs/transports fail.
@@ -84,10 +84,10 @@ P4/phone bench run. Live hardware validation is recorded separately from host te
 
 ## Host verification
 
-With the patched L3 checkout and BFC dependency available:
+With winject-l3 and BFC checkouts available:
 
 ```sh
-python3 tests/run_host_tests.py --l3 /path/to/patched/winject-l3 --bfc /path/to/BFC
+python3 tests/run_host_tests.py --l3 /path/to/winject-l3 --bfc /path/to/BFC
 ```
 
 The test covers matching Android/C++ golden wire bytes, split records, high u16

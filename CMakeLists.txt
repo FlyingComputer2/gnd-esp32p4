@@ -8,42 +8,22 @@ endif()
 include(FetchContent)
 FetchContent_Declare(winject_l3
     GIT_REPOSITORY https://github.com/winject-wireless/winject-l3.git
-    GIT_TAG fb3eea11d3edc81ce39287a8fd5c77e3d43d41f1
+    GIT_TAG 8ff2517a0818da2d5e7eac11cd0d386b82042581
 )
 FetchContent_GetProperties(winject_l3)
 if(NOT winject_l3_POPULATED)
     FetchContent_Populate(winject_l3)
 endif()
-# The pinned release has named app queues; expose the L3-owned UpstreamQueue.
-if(NOT EXISTS ${winject_l3_SOURCE_DIR}/src/manager/endpoint/UpstreamQueue.h)
-    execute_process(COMMAND git apply ${CMAKE_CURRENT_LIST_DIR}/patches/winject-l3-upstream-queue.patch
-                    WORKING_DIRECTORY ${winject_l3_SOURCE_DIR} COMMAND_ERROR_IS_FATAL ANY)
-endif()
-# A cached dependency may contain an older version of this compatibility patch.
-execute_process(COMMAND git apply --reverse --check ${CMAKE_CURRENT_LIST_DIR}/patches/winject-l3-upstream-queue.patch
-    WORKING_DIRECTORY ${winject_l3_SOURCE_DIR} RESULT_VARIABLE queue_patch_check
-    OUTPUT_QUIET ERROR_QUIET)
-if(NOT queue_patch_check EQUAL 0)
-    message(FATAL_ERROR "L3 compatibility patch is stale; remove ${winject_l3_SOURCE_DIR} and reconfigure")
-endif()
-# Declare the shared BFC pin before the older proxy declares it.
+# Declare the shared BFC pin before the proxy declares it.
 include(${winject_l3_SOURCE_DIR}/src/BfcFetch.cmake)
 
 FetchContent_Declare(winject_sdio_proxy
     GIT_REPOSITORY https://github.com/winject-wireless/winject-radio-esp32-sdio-proxy.git
-    GIT_TAG ad4a1672424b726b4d9b8596180a3ed02e04b330
+    GIT_TAG 0dc783a1b0fd1aadd9c88620af47dde5e8150630
 )
 FetchContent_GetProperties(winject_sdio_proxy)
 if(NOT winject_sdio_proxy_POPULATED)
     FetchContent_Populate(winject_sdio_proxy)
-endif()
-# Keep the original radio ownership copy in PSRAM when ground video retains it.
-execute_process(COMMAND git apply --reverse --check ${CMAKE_CURRENT_LIST_DIR}/patches/proxy-psram-packets.patch
-    WORKING_DIRECTORY ${winject_sdio_proxy_SOURCE_DIR} RESULT_VARIABLE psram_patch_check
-    OUTPUT_QUIET ERROR_QUIET)
-if(NOT psram_patch_check EQUAL 0)
-    execute_process(COMMAND git apply ${CMAKE_CURRENT_LIST_DIR}/patches/proxy-psram-packets.patch
-        WORKING_DIRECTORY ${winject_sdio_proxy_SOURCE_DIR} COMMAND_ERROR_IS_FATAL ANY)
 endif()
 include(${winject_sdio_proxy_SOURCE_DIR}/cmake/winject_sdio_proxy.cmake)
 

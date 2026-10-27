@@ -36,21 +36,10 @@ add_test(NAME video_queue_test COMMAND video_test queue)
 # Exercise the real Config::validate path used by firmware startup, including
 # the shared validate_upstreams pass (USB/FEC tests do not construct Config).
 FetchContent_Declare(winject_l3 GIT_REPOSITORY https://github.com/winject-wireless/winject-l3.git
-    GIT_TAG fb3eea11d3edc81ce39287a8fd5c77e3d43d41f1)
+    GIT_TAG 8ff2517a0818da2d5e7eac11cd0d386b82042581)
 FetchContent_GetProperties(winject_l3)
 if(NOT winject_l3_POPULATED)
     FetchContent_Populate(winject_l3)
-endif()
-if(NOT EXISTS ${winject_l3_SOURCE_DIR}/src/manager/endpoint/UpstreamQueue.h)
-    execute_process(COMMAND git apply ${CMAKE_CURRENT_SOURCE_DIR}/../../patches/winject-l3-upstream-queue.patch
-        WORKING_DIRECTORY ${winject_l3_SOURCE_DIR} COMMAND_ERROR_IS_FATAL ANY)
-endif()
-# A cached dependency may contain an older version of this compatibility patch.
-execute_process(COMMAND git apply --reverse --check ${CMAKE_CURRENT_SOURCE_DIR}/../../patches/winject-l3-upstream-queue.patch
-    WORKING_DIRECTORY ${winject_l3_SOURCE_DIR} RESULT_VARIABLE queue_patch_check
-    OUTPUT_QUIET ERROR_QUIET)
-if(NOT queue_patch_check EQUAL 0)
-    message(FATAL_ERROR "L3 compatibility patch is stale; remove ${winject_l3_SOURCE_DIR} and reconfigure")
 endif()
 set(manager ${winject_l3_SOURCE_DIR}/src/manager)
 add_executable(config_test config_test.cpp
@@ -74,15 +63,3 @@ add_executable(owned_ingress_test owned_ingress_test.cpp)
 target_link_libraries(owned_ingress_test PRIVATE video_core)
 add_test(NAME owned_ingress_test COMMAND owned_ingress_test)
 
-add_library(l3_transport_core STATIC
-    ${manager}/endpoint/Upstream.cpp ${manager}/endpoint/UpstreamStats.cpp
-    ${manager}/endpoint/QueueUpstream.cpp ${manager}/endpoint/DatagramAir.cpp
-    ${manager}/fec/FecTx.cpp ${manager}/fec/FecRx.cpp
-    ${manager}/fec/vendor/rs_block_erasure.cpp
-    ${manager}/fec/vendor/rs_block_erasure_rx.cpp
-    ${manager}/fec/vendor/rs_encode_scalar.cpp ${manager}/utils/NetUtil.cpp)
-target_include_directories(l3_transport_core PUBLIC ${manager} ${isa-l_SOURCE_DIR}/include)
-target_link_libraries(l3_transport_core PUBLIC video_core)
-add_executable(l3_owned_queue_test l3_owned_queue_test.cpp)
-target_link_libraries(l3_owned_queue_test PRIVATE l3_transport_core)
-add_test(NAME l3_owned_queue_test COMMAND l3_owned_queue_test)

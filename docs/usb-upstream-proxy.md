@@ -18,9 +18,8 @@ ground TX bus d4 / RX bus c3 through the P4 receiver. MSP IDs do not select any 
 
 ## Direct L3 transport binding
 
-L3 creates `winject::UpstreamQueue` when the upstream's app transport is queue.
-The pinned L3 release exposes older named queues, so the P4 carries an explicit
-compatibility patch adding the app object and a creation notification:
+L3 creates `winject::UpstreamQueue` for a queue upstream whose endpoint and
+reactor names are empty, and hands it over through `Config::on_upstream_queue`:
 
 ```cpp
 video.mode = winject::UpstreamMode::queue;
@@ -189,7 +188,7 @@ video envelopes and feedback are incompatible with this receive-only source.
 
 ## Verification and remaining bench work
 
-Host tests exercise real USB service routing against the patched L3 app object:
+Host tests exercise real USB service routing against the L3 app object:
 unsigned IDs, identical golden bytes, split records, management/video separation,
 duplicate bindings, credit isolation, stale sessions and invalid traffic. The
 P4 receiver integration test drops RS shards, verifies identical fanout RTP and
