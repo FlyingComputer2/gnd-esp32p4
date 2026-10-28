@@ -88,6 +88,7 @@ echo "get rcv latency_stats"   | nc -u -w1 <ground> 5090   # camera -> stream_re
 echo "get mcast latency_stats" | nc -u -w1 <ground> 5090   # camera -> after the multicast sendto()
 echo "get gnd stats"           | nc -u -w1 <ground> 5090   # GROUND_VIDEO counters and fanout queue depths
 echo "get gnd tasks"           | nc -u -w1 <ground> 5090   # CPU % of one core per task since the last query: name:core:prio:pct
+echo "get usb latency_stats"   | nc -u -w1 <ground> 5090   # camera -> the USB service takes the packet from the fanout
 echo "get usb prof"            | nc -u -w1 <ground> 5090   # USB service-loop time per section and counters since the last query
 ```
 

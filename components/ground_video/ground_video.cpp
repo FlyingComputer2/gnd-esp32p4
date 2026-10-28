@@ -120,6 +120,7 @@ std::string task_cpu_stats() {
 
 latency_window rx_latency;     // at receiver output()
 latency_window mcast_latency;  // after a successful multicast sendto()
+latency_window usb_latency;    // when the USB service takes the packet from the fanout
 
 int64_t clock_ns(clockid_t id) {
     timespec ts{};
@@ -302,7 +303,15 @@ esp_err_t ground_video_start(std::shared_ptr<winject::UpstreamQueue> up) {
         rx->configure("recv_cpu", "1") < 0 || rx->configure("recv_prio", "13") < 0 || rx->open() < 0) return ESP_FAIL;
     upstream = std::move(up); receiver = std::move(rx);
     auto err = usb_upstream_register_source(0, "video-rtp-h264",
-        [] { return fanout.pop(0); }, [] { return upstream->connected(); }, "rtp-h264-v1");
+        [] {
+            auto packet = fanout.pop(0);
+            if (packet) {
+                const float age = au_capture_age_ms(*packet);
+                if (age >= 0) usb_latency.add(age, -1);
+            }
+            return packet;
+        },
+        [] { return upstream->connected(); }, "rtp-h264-v1");
     if (err != ESP_OK) return err;
     if (xTaskCreate(multicast_task, "video_multicast", 4096, nullptr, 15, nullptr) != pdPASS ||
         xTaskCreate(video_task, "video_fanout", 8192, nullptr, 12, nullptr) != pdPASS) return ESP_ERR_NO_MEM;
@@ -312,6 +321,7 @@ esp_err_t ground_video_start(std::shared_ptr<winject::UpstreamQueue> up) {
     mplane.add_query("rcv", "latency_stats", [] { return rx_latency.stats(true); });
     mplane.add_query("mcast", "latency_ms", [] { return format_ms(mcast_latency.last_latency_ms()); });
     mplane.add_query("mcast", "latency_stats", [] { return mcast_latency.stats(false); });
+    mplane.add_query("usb", "latency_stats", [] { return usb_latency.stats(false); });
     mplane.add_query("gnd", "stats", ground_video_stats);
     mplane.add_query("gnd", "tasks", task_cpu_stats);
     mplane.add_query("usb", "prof", usb_upstream_profile);
