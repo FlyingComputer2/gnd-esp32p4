@@ -191,10 +191,13 @@ void multicast_task(void *) {
                 }
             }
         }
-        // Pace recovery bursts to two packets per tick. This still exceeds
-        // 10 Mbps while reducing bursts into downstream multicast queues.
+        // Up to eight packets per tick. Two per tick looked like ~2000 pps
+        // of headroom, but a tick plus two sendto()s through a busy lwIP took
+        // ~3 ms, below the ~600 pps of video: a standing queue of 9-13
+        // packets added ~25 ms to multicast. Eight still caps a recovery
+        // burst at ~12 KB per tick into downstream queues.
         // A transient send failure is retried after yielding, in order.
-        for (unsigned i = 0; i < 2; ++i) {
+        for (unsigned i = 0; i < 8; ++i) {
             if (fd < 0) {
                 if (!fanout.pop(1)) break;
                 ++multicast_offline;
@@ -251,6 +254,7 @@ void video_task(void *) {
                 }
             }
             fanout.push(packet.sdu);
+            usb_upstream_wake();
         }
         vTaskDelay(pdMS_TO_TICKS(1));
     }
