@@ -8,7 +8,7 @@ endif()
 include(FetchContent)
 FetchContent_Declare(winject_l3
     GIT_REPOSITORY https://github.com/winject-wireless/winject-l3.git
-    GIT_TAG 51f92c177b4b8f47a34e435b0a34aabf3cc1246c
+    GIT_TAG ffc3f403f00d2fb82969ec91b4faf9d6ba283faa
 )
 FetchContent_GetProperties(winject_l3)
 if(NOT winject_l3_POPULATED)
@@ -29,7 +29,7 @@ include(${winject_sdio_proxy_SOURCE_DIR}/cmake/winject_sdio_proxy.cmake)
 
 FetchContent_Declare(vstreamer
     GIT_REPOSITORY https://github.com/FlyingComputer2/vstreamer.git
-    GIT_TAG feceaf962048759d9d73206096b966cb838d0c58)
+    GIT_TAG 187c140d41e0f4ef7e8d59e1f585d82bf9d072fa)
 FetchContent_GetProperties(vstreamer)
 if(NOT vstreamer_POPULATED)
     FetchContent_Populate(vstreamer)
