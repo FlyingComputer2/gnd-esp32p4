@@ -8,7 +8,7 @@ endif()
 include(FetchContent)
 FetchContent_Declare(winject_l3
     GIT_REPOSITORY https://github.com/winject-wireless/winject-l3.git
-    GIT_TAG 8ff2517a0818da2d5e7eac11cd0d386b82042581
+    GIT_TAG 51f92c177b4b8f47a34e435b0a34aabf3cc1246c
 )
 FetchContent_GetProperties(winject_l3)
 if(NOT winject_l3_POPULATED)
@@ -29,7 +29,7 @@ include(${winject_sdio_proxy_SOURCE_DIR}/cmake/winject_sdio_proxy.cmake)
 
 FetchContent_Declare(vstreamer
     GIT_REPOSITORY https://github.com/FlyingComputer2/vstreamer.git
-    GIT_TAG e4fd44853249b74113b76f4ff668d87c5b3b8deb)
+    GIT_TAG feceaf962048759d9d73206096b966cb838d0c58)
 FetchContent_GetProperties(vstreamer)
 if(NOT vstreamer_POPULATED)
     FetchContent_Populate(vstreamer)
@@ -44,6 +44,7 @@ endif()
 set(VSTREAMER_ISAL_ROOT ${isa-l_SOURCE_DIR})
 
 set(EXTRA_COMPONENT_DIRS ${WINJECT_SDIO_PROXY_COMPONENT_DIRS}
-                         ${winject_l3_SOURCE_DIR}/idf/winject_l3)
+                         ${winject_l3_SOURCE_DIR}/idf/winject_l3
+                         ${winject_l3_SOURCE_DIR}/idf/app_bwtest)
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(rover-ground-esp32p4)
