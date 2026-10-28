@@ -1,3 +1,0 @@
-/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/winject_sdio_proxy-subbuild/CMakeFiles/winject_sdio_proxy-populate.dir
-/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/winject_sdio_proxy-subbuild/CMakeFiles/edit_cache.dir
-/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/winject_sdio_proxy-subbuild/CMakeFiles/rebuild_cache.dir
