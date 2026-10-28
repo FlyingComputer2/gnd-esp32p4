@@ -1,9 +1,11 @@
 // Guition ground radio: Ethernet/OTA, C6 SDIO proxy, L3 and USB.
 // L3 upstreams: 0 clock sync (krono SynchServer, UDP console 5110), 1 video,
-// 2 bandwidth tester (app_bwtest, UDP console 5100). Buses as on the rover,
-// swapped: sync a1/b2, video d4/c3, tester e5/f6.
-// USB IDs: 0 video, 1 MSP DisplayPort (TBA), 2 MSP RC telemetry (TBA), 3 sync
-// (krono synch requests from the Android app, answered against this board's clock).
+// 2 bandwidth tester (app_bwtest, UDP console 5100), 3 rover_sample RC /
+// telemetry (bridged, see below). Buses as on the rover, swapped: sync a1/b2,
+// video d4/c3, tester e5/f6, rover_sample 28/17.
+// USB IDs: 0 video, 1 MSP DisplayPort (TBA), 2 MSP RC telemetry (rover_sample),
+// 3 sync (krono synch requests from the Android app, answered against this
+// board's clock).
 #include <inttypes.h>
 #include <stdio.h>
 
@@ -30,8 +32,12 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <bfc/cv_reactor.hpp>
+#include <atomic>
 #include <deque>
+#include <mutex>
+#include <sys/socket.h>
 #include <thread>
+#include "utils/NetUtil.h"
 
 static const char *TAG = "rover_ground";
 namespace {
@@ -171,6 +177,101 @@ void register_usb_synch() {
         answer_usb_synch,
         [] { return true; }, "synch-v1", 64);
     if (err != ESP_OK) printf("GROUND_USB_SYNCH register failed err=0x%x\n", err);
+}
+
+// Upstream 3 (rover_sample): MSP v2 frames, one per datagram, passed through
+// unchanged. Up: USB channel 2 "msp-rc" and UDP 5120 (bench tools) go to the
+// rover. Down: telemetry goes to USB channel 2 and to the last UDP sender
+// (for 10 s after it last sent). The rover follows one RC source at a time.
+constexpr uint16_t usb_rc_channel = 2;
+constexpr const char *rc_udp_console = "0.0.0.0:5120";
+std::mutex rc_mu;
+std::shared_ptr<winject::UpstreamQueue> rc_up;  // set by on_upstream_queue
+std::deque<bfc::shared_sized_buffer> usb_rc_down;
+std::atomic<uint32_t> rc_up_frames{0}, rc_up_drops{0}, rc_down_frames{0};
+
+std::shared_ptr<winject::UpstreamQueue> rc_upstream() {
+    std::lock_guard<std::mutex> lock(rc_mu);
+    return rc_up;
+}
+
+bool rc_send_up(const uint8_t *data, size_t len) {
+    auto up = rc_upstream();
+    if (up && up->try_send(data, len)) { ++rc_up_frames; return true; }
+    ++rc_up_drops;
+    return false;
+}
+
+void register_usb_rc() {
+    const esp_err_t err = usb_upstream_register_service(usb_rc_channel, "msp-rc",
+        []() -> std::optional<bfc::shared_sized_buffer> {
+            std::lock_guard<std::mutex> lock(rc_mu);
+            if (usb_rc_down.empty()) return std::nullopt;
+            auto frame = std::move(usb_rc_down.front());
+            usb_rc_down.pop_front();
+            return frame;
+        },
+        rc_send_up,
+        [] { auto up = rc_upstream(); return up && up->connected(); }, "rc-v1", 64);
+    if (err != ESP_OK) printf("GROUND_USB_RC register failed err=0x%x\n", err);
+}
+
+void run_rc_bridge(std::shared_ptr<winject::UpstreamQueue> up) {
+    sockaddr_in addr{};
+    const int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0 || !winject::parse_host_port(rc_udp_console, &addr) ||
+        bind(fd, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr)) != 0) {
+        printf("GROUND_RC_BRIDGE cannot bind %s\n", rc_udp_console);
+        return;
+    }
+    // Short timeout: the same loop drains telemetry every couple of ms.
+    timeval timeout{};
+    timeout.tv_usec = 2000;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    sockaddr_in peer{};
+    int64_t peer_until = 0;
+    uint8_t buf[256];
+    for (;;) {
+        sockaddr_in from{};
+        socklen_t from_len = sizeof(from);
+        const ssize_t n = recvfrom(fd, buf, sizeof(buf), 0, reinterpret_cast<sockaddr *>(&from), &from_len);
+        const int64_t now = esp_timer_get_time();
+        if (n > 0) {
+            rc_send_up(buf, size_t(n));
+            peer = from;
+            peer_until = now + 10000000;
+        }
+        while (auto frame = up->receive()) {
+            ++rc_down_frames;
+            if (now < peer_until)
+                sendto(fd, frame->data(), frame->size(), 0, reinterpret_cast<const sockaddr *>(&peer), sizeof(peer));
+            std::lock_guard<std::mutex> lock(rc_mu);
+            // The phone wants the newest telemetry; keep a few.
+            if (usb_rc_down.size() >= 8) usb_rc_down.pop_front();
+            usb_rc_down.push_back(std::move(*frame));
+        }
+    }
+}
+
+void start_rc_bridge(std::shared_ptr<winject::UpstreamQueue> up) {
+    {
+        std::lock_guard<std::mutex> lock(rc_mu);
+        if (rc_up) {
+            ESP_LOGW(TAG, "rover_sample upstream replaced; restart to rebind the bridge");
+            return;
+        }
+        rc_up = up;
+    }
+    esp_pthread_cfg_t prev {};
+    const bool had_prev = esp_pthread_get_cfg(&prev) == ESP_OK;
+    auto cfg = esp_pthread_get_default_config();
+    cfg.stack_size = 4 * 1024;
+    cfg.prio = 10;
+    cfg.thread_name = "rc_bridge";
+    cfg.inherit_cfg = true;
+    esp_pthread_set_cfg(&cfg);
+    std::thread(run_rc_bridge, std::move(up)).detach();
+    if (had_prev) esp_pthread_set_cfg(&prev);
 }
 
 void start_radio_queues() {
@@ -324,6 +425,15 @@ static void *l3_main(void *)
     bwtest.scheduler_budget = 4096;
     bwtest.fec_type = winject::FecType::none; // Clean loss counts.
     cfg.upstreams.push_back(bwtest);
+    winject::UpstreamConfig rover_rc;
+    rover_rc.index = 3; // Rover upstream 3 (rover_sample) with the buses swapped.
+    rover_rc.mode = winject::UpstreamMode::queue;
+    rover_rc.bus_tx = 0x28;
+    rover_rc.bus_rx = 0x17;
+    rover_rc.rx_queue_capacity = 16;
+    rover_rc.scheduler_budget = 256;
+    rover_rc.fec_type = winject::FecType::none; // RC repeats at 50 Hz; FEC only adds latency.
+    cfg.upstreams.push_back(rover_rc);
     cfg.on_upstream_queue = [](size_t index, std::shared_ptr<winject::UpstreamQueue> up)
     {
         if (index == 0)
@@ -334,11 +444,15 @@ static void *l3_main(void *)
         {
             ESP_ERROR_CHECK(ground_video_start(std::move(up)));
             ESP_ERROR_CHECK(usb_upstream_start());
-            printf("GROUND_READY usb=v2 video=0 msp_displayport=1:tba msp_rc_telemetry=2:tba sync=3\n");
+            printf("GROUND_READY usb=v2 video=0 msp_displayport=1:tba msp_rc_telemetry=2 sync=3\n");
         }
         else if (index == 2)
         {
             start_bwtest(std::move(up));
+        }
+        else if (index == 3)
+        {
+            start_rc_bridge(std::move(up));
         }
     };
     int rc = winject_l3::main(cfg);
@@ -366,6 +480,7 @@ extern "C" void app_main(void)
 
     start_radio_queues();
     register_usb_synch();
+    register_usb_rc();
     winject_proxy_config_t cfg = WINJECT_PROXY_CONFIG_DEFAULT();
     cfg.dplane_tx_queue = radio_tx_name;
     cfg.dplane_rx_queue = radio_rx_name;
@@ -398,6 +513,8 @@ extern "C" void app_main(void)
         sdio_link_host_stats_t ls;
         winject_proxy_get_stats(&ps);
         usb_upstream_log_stats();
+        printf("GROUND_RC up=%" PRIu32 " up_drop=%" PRIu32 " down=%" PRIu32 "\n", rc_up_frames.load(),
+               rc_up_drops.load(), rc_down_frames.load());
         const auto us = usb_synch.stats();
         printf("GROUND_USB_SYNCH requests=%llu replies=%llu bad=%llu\n",
                (unsigned long long)us.requests, (unsigned long long)us.replies,

@@ -8,13 +8,13 @@ MediaCodec for video decode. Neither endpoint treats USB transfer boundaries as 
 | --- | --- | --- |
 | 0 | Video | Implemented; receive-only RTP H.264 (`rtp-h264-v1`) |
 | 1 | MSP DisplayPort | TBA |
-| 2 | MSP RC telemetry | TBA |
+| 2 | MSP RC telemetry | Implemented; bidirectional `msp-rc` (`rc-v1`), MSP v2 frames bridged unchanged to L3 upstream 3 (rover_sample) |
 
 All IDs 0–65535 are valid for application DATA/CREDIT. Management is selected
 by record kind. Its channel header field is zero and unused; a management
 REQUEST must never enter channel 0's video handler. USB IDs, L3 upstream indexes
 and radio buses are independent. Video maps USB 0 to L3 upstream index 1,
-ground TX bus d4 / RX bus c3 through the P4 receiver. MSP IDs do not select any radio buses yet.
+ground TX bus d4 / RX bus c3 through the P4 receiver. USB 2 maps to L3 upstream index 3 (ground TX bus 28 / RX bus 17), one MSP v2 frame per DATA record each way. USB 1 selects no radio bus yet.
 
 ## Direct L3 transport binding
 

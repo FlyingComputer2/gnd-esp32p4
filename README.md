@@ -18,7 +18,7 @@ See [video pipeline and multicast setup](docs/video-pipeline.md).
 | --- | --- | --- |
 | 0 | Video | Receive-only RTP H.264 (`rtp-h264-v1`) |
 | 1 | MSP DisplayPort | TBA; not registered |
-| 2 | MSP RC telemetry | TBA; not registered |
+| 2 | MSP RC telemetry (rover_sample) | Bidirectional `msp-rc` (`rc-v1`): MSP v2 frames to and from L3 upstream 3, unchanged |
 
 All unsigned IDs 0–65535 are supported by the transport. Management is selected
 by record kind and never routed as channel-0 video. See the [wire/API specification](docs/usb-upstream-proxy.md).
@@ -48,6 +48,13 @@ channel 1, OFDM_24M, 15 dBm. Upstreams (buses follow the flow, not the index):
 | 0 | Clock sync, krono SynchServer (reference clock), UDP console 5110 | a1 / b2 | none |
 | 1 | Video | d4 / c3 | none (vstreamer's own) |
 | 2 | Bandwidth tester, app_bwtest, UDP console 5100 (`test_send <offer_kbps> <duration_ms>`, `stats`, `clr`) | e5 / f6 | none |
+| 3 | RC car (rover_sample): RC up, telemetry down; bridged to USB channel 2 and UDP 5120 | 28 / 17 | none (RC repeats every 20 ms) |
+
+Upstream 3 carries the rover's rover_sample protocol, MSP v2 with one frame per datagram (wire, messages and
+the rover's console: rov-esp32p4 README, "RC car"). This board does not parse it. Frames from USB channel 2
+(`msp-rc`) and from UDP 5120 go to the rover; telemetry from the rover goes to USB channel 2 (newest 8 kept) and
+to the last UDP 5120 sender for 10 s after it last sent. `GROUND_RC up= up_drop= down=` every 10 s counts
+frames each way. The rover follows one RC source at a time (each frame names its source).
 
 USB channel 3, `sync` (format `synch-v1`), answers the Android app's krono synch rtt requests against this board's
 clock, so the app can show camera-to-decode latency (see gnd-android `docs/USB_PROTOCOL.md`). This board's
