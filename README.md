@@ -1,9 +1,9 @@
-# rover-ground-esp32p4
+# gnd-esp32p4
 
 Ground-station firmware for Guition JC-ESP32P4-M3-DEV (P4 rev 1.3, C6 on SDIO).
 The P4 runs the SDIO proxy, winject-l3 and vstreamer's `stream_receiver`.
 It recovers radio FEC once, then shares recovered RTP H.264 with Ethernet
-multicast and [Android](https://github.com/FlyingComputer2/rover-ground-android).
+multicast and [Android](https://github.com/FlyingComputer2/gnd-android).
 Android depayloads RTP and displays H.264 through MediaCodec.
 
 ```text
@@ -44,7 +44,7 @@ L3 uses the local SDIO proxy through in-process radio queues; management uses lo
 index is 0, TX bus d4, RX bus c3, domain 0xB00B, channel 1, OFDM_24M, 15 dBm.
 Upstream 1 (TX e5, RX f6, no FEC) is the bandwidth tester, app_bwtest, with its UDP
 console on 5100 (`test_send <offer_kbps> <duration_ms>`, `stats`, `clr`; see the
-rover-remote-esp32p4 README).
+rov-esp32p4 README).
 These must match the rover (with buses swapped). Video has no manager-level FEC;
 vstreamer's FEC terminates at the ground P4; P4 returns receiver feedback. The manager console is bound to
 0.0.0.0:2400 (no authentication; Ethernet is an internal link). Do not run a second Ethernet L3 manager against this radio:

@@ -47,4 +47,4 @@ set(EXTRA_COMPONENT_DIRS ${WINJECT_SDIO_PROXY_COMPONENT_DIRS}
                          ${winject_l3_SOURCE_DIR}/idf/winject_l3
                          ${winject_l3_SOURCE_DIR}/idf/app_bwtest)
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(rover-ground-esp32p4)
+project(gnd-esp32p4)
