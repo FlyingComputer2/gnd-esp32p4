@@ -31,6 +31,9 @@ public:
         if (q.empty()) return std::nullopt;
         auto packet = std::move(q.front()); q.pop_front(); return packet;
     }
+    size_t depth(size_t consumer) const {
+        std::lock_guard<std::mutex> lock(mu_); return queues_.at(consumer).size();
+    }
     uint64_t drops(size_t consumer) const {
         std::lock_guard<std::mutex> lock(mu_); return drops_.at(consumer);
     }
