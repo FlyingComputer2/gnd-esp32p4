@@ -12,6 +12,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <algorithm>
+#include <map>
 #include <atomic>
 #include <cerrno>
 #include <cstdio>
@@ -81,6 +82,42 @@ private:
     sample last_{-1, -1};
     uint64_t rejected_ = 0;
 };
+// CPU share per FreeRTOS task since the previous query, busiest first:
+// "<name>:<core>:<prio>:<percent>" (core '-' = unpinned). Percent is of one core.
+std::string task_cpu_stats() {
+    static std::mutex mu;
+    static std::map<TaskHandle_t, uint32_t> last_counter; // names repeat
+    static uint32_t last_total = 0;
+    std::lock_guard<std::mutex> lock(mu);
+    std::vector<TaskStatus_t> tasks(uxTaskGetNumberOfTasks() + 4);
+    configRUN_TIME_COUNTER_TYPE total = 0;
+    tasks.resize(uxTaskGetSystemState(tasks.data(), tasks.size(), &total));
+    const uint32_t elapsed = uint32_t(total) - last_total;
+    last_total = uint32_t(total);
+    struct row { std::string name; int core; unsigned prio; float pct; };
+    std::vector<row> rows;
+    std::map<TaskHandle_t, uint32_t> counter;
+    for (const auto &t : tasks) {
+        const std::string name = t.pcTaskName;
+        const uint32_t now = uint32_t(t.ulRunTimeCounter);
+        const auto it = last_counter.find(t.xHandle);
+        const uint32_t delta = it == last_counter.end() ? now : now - it->second;
+        counter[t.xHandle] = now;
+        rows.push_back({name, int(xTaskGetCoreID(t.xHandle)), unsigned(t.uxCurrentPriority),
+            elapsed ? 100.f * float(delta) / float(elapsed) : 0.f});
+    }
+    last_counter.swap(counter);
+    std::sort(rows.begin(), rows.end(), [](const row &a, const row &b) { return a.pct > b.pct; });
+    std::string out = "window_ms=" + std::to_string(elapsed / 1000);
+    char buf[64];
+    for (const auto &r : rows) {
+        if (r.core == tskNO_AFFINITY) snprintf(buf, sizeof(buf), " %s:-:%u:%.1f", r.name.c_str(), r.prio, r.pct);
+        else snprintf(buf, sizeof(buf), " %s:%d:%u:%.1f", r.name.c_str(), r.core, r.prio, r.pct);
+        out += buf;
+    }
+    return out;
+}
+
 latency_window rx_latency;     // at receiver output()
 latency_window mcast_latency;  // after a successful multicast sendto()
 
@@ -276,6 +313,8 @@ esp_err_t ground_video_start(std::shared_ptr<winject::UpstreamQueue> up) {
     mplane.add_query("mcast", "latency_ms", [] { return format_ms(mcast_latency.last_latency_ms()); });
     mplane.add_query("mcast", "latency_stats", [] { return mcast_latency.stats(false); });
     mplane.add_query("gnd", "stats", ground_video_stats);
+    mplane.add_query("gnd", "tasks", task_cpu_stats);
+    mplane.add_query("usb", "prof", usb_upstream_profile);
     if (const int r = mplane.start(mplane_port, mplane_thread); r < 0)
         printf("GROUND_MPLANE bind :%d failed (%d)\n", mplane_port, r);
     else

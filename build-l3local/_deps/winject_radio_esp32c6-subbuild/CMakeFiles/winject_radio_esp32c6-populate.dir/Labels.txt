@@ -1,0 +1,14 @@
+# Target labels
+ winject_radio_esp32c6-populate
+# Source files and their labels
+/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/winject_radio_esp32c6-subbuild/CMakeFiles/winject_radio_esp32c6-populate
+/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/winject_radio_esp32c6-subbuild/CMakeFiles/winject_radio_esp32c6-populate.rule
+/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/winject_radio_esp32c6-subbuild/CMakeFiles/winject_radio_esp32c6-populate-complete.rule
+/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/winject_radio_esp32c6-subbuild/winject_radio_esp32c6-populate-prefix/src/winject_radio_esp32c6-populate-stamp/winject_radio_esp32c6-populate-build.rule
+/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/winject_radio_esp32c6-subbuild/winject_radio_esp32c6-populate-prefix/src/winject_radio_esp32c6-populate-stamp/winject_radio_esp32c6-populate-configure.rule
+/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/winject_radio_esp32c6-subbuild/winject_radio_esp32c6-populate-prefix/src/winject_radio_esp32c6-populate-stamp/winject_radio_esp32c6-populate-download.rule
+/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/winject_radio_esp32c6-subbuild/winject_radio_esp32c6-populate-prefix/src/winject_radio_esp32c6-populate-stamp/winject_radio_esp32c6-populate-install.rule
+/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/winject_radio_esp32c6-subbuild/winject_radio_esp32c6-populate-prefix/src/winject_radio_esp32c6-populate-stamp/winject_radio_esp32c6-populate-mkdir.rule
+/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/winject_radio_esp32c6-subbuild/winject_radio_esp32c6-populate-prefix/src/winject_radio_esp32c6-populate-stamp/winject_radio_esp32c6-populate-patch.rule
+/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/winject_radio_esp32c6-subbuild/winject_radio_esp32c6-populate-prefix/src/winject_radio_esp32c6-populate-stamp/winject_radio_esp32c6-populate-test.rule
+/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/winject_radio_esp32c6-subbuild/winject_radio_esp32c6-populate-prefix/src/winject_radio_esp32c6-populate-stamp/winject_radio_esp32c6-populate-update.rule

@@ -1,0 +1,21 @@
+# ninja log v5
+1	62	1793186444983311129	winject_sdio_proxy-populate-prefix/src/winject_sdio_proxy-populate-stamp/winject_sdio_proxy-populate-mkdir	4967004d6e537f58
+1	62	1793186444983311129	/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/winject_sdio_proxy-subbuild/winject_sdio_proxy-populate-prefix/src/winject_sdio_proxy-populate-stamp/winject_sdio_proxy-populate-mkdir	4967004d6e537f58
+62	1512	1793186446433290101	winject_sdio_proxy-populate-prefix/src/winject_sdio_proxy-populate-stamp/winject_sdio_proxy-populate-download	d79fa0dc305b685e
+62	1512	1793186446433290101	/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/winject_sdio_proxy-subbuild/winject_sdio_proxy-populate-prefix/src/winject_sdio_proxy-populate-stamp/winject_sdio_proxy-populate-download	d79fa0dc305b685e
+1512	1556	0	winject_sdio_proxy-populate-prefix/src/winject_sdio_proxy-populate-stamp/winject_sdio_proxy-populate-update	f84d6bfa607633f5
+1512	1556	0	/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/winject_sdio_proxy-subbuild/winject_sdio_proxy-populate-prefix/src/winject_sdio_proxy-populate-stamp/winject_sdio_proxy-populate-update	f84d6bfa607633f5
+1556	1612	1793186446533288650	winject_sdio_proxy-populate-prefix/src/winject_sdio_proxy-populate-stamp/winject_sdio_proxy-populate-patch	2074d9477084c1c9
+1556	1612	1793186446533288650	/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/winject_sdio_proxy-subbuild/winject_sdio_proxy-populate-prefix/src/winject_sdio_proxy-populate-stamp/winject_sdio_proxy-populate-patch	2074d9477084c1c9
+1612	1668	1793186446589954495	winject_sdio_proxy-populate-prefix/src/winject_sdio_proxy-populate-stamp/winject_sdio_proxy-populate-configure	f75e581e73c256f1
+1612	1668	1793186446589954495	/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/winject_sdio_proxy-subbuild/winject_sdio_proxy-populate-prefix/src/winject_sdio_proxy-populate-stamp/winject_sdio_proxy-populate-configure	f75e581e73c256f1
+1668	1721	1793186446643287055	winject_sdio_proxy-populate-prefix/src/winject_sdio_proxy-populate-stamp/winject_sdio_proxy-populate-build	e8d31a8b4908e953
+1668	1721	1793186446643287055	/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/winject_sdio_proxy-subbuild/winject_sdio_proxy-populate-prefix/src/winject_sdio_proxy-populate-stamp/winject_sdio_proxy-populate-build	e8d31a8b4908e953
+1721	1774	1793186446696619615	winject_sdio_proxy-populate-prefix/src/winject_sdio_proxy-populate-stamp/winject_sdio_proxy-populate-install	860c157489ee9fe9
+1721	1774	1793186446696619615	/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/winject_sdio_proxy-subbuild/winject_sdio_proxy-populate-prefix/src/winject_sdio_proxy-populate-stamp/winject_sdio_proxy-populate-install	860c157489ee9fe9
+1774	1828	1793186446749952175	winject_sdio_proxy-populate-prefix/src/winject_sdio_proxy-populate-stamp/winject_sdio_proxy-populate-test	b29a30220f3a1264
+1774	1828	1793186446749952175	/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/winject_sdio_proxy-subbuild/winject_sdio_proxy-populate-prefix/src/winject_sdio_proxy-populate-stamp/winject_sdio_proxy-populate-test	b29a30220f3a1264
+1828	1905	1793186446826617730	CMakeFiles/winject_sdio_proxy-populate-complete	2c2e2c932a2b4fc
+1828	1905	1793186446826617730	winject_sdio_proxy-populate-prefix/src/winject_sdio_proxy-populate-stamp/winject_sdio_proxy-populate-done	2c2e2c932a2b4fc
+1828	1905	1793186446826617730	/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/winject_sdio_proxy-subbuild/CMakeFiles/winject_sdio_proxy-populate-complete	2c2e2c932a2b4fc
+1828	1905	1793186446826617730	/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/winject_sdio_proxy-subbuild/winject_sdio_proxy-populate-prefix/src/winject_sdio_proxy-populate-stamp/winject_sdio_proxy-populate-done	2c2e2c932a2b4fc

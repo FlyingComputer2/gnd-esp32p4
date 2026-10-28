@@ -1,0 +1,46 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/vstreamer-subbuild/CMakeFiles/vstreamer-populate"
+		},
+		{
+			"file" : "/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/vstreamer-subbuild/CMakeFiles/vstreamer-populate.rule"
+		},
+		{
+			"file" : "/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/vstreamer-subbuild/CMakeFiles/vstreamer-populate-complete.rule"
+		},
+		{
+			"file" : "/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/vstreamer-subbuild/vstreamer-populate-prefix/src/vstreamer-populate-stamp/vstreamer-populate-build.rule"
+		},
+		{
+			"file" : "/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/vstreamer-subbuild/vstreamer-populate-prefix/src/vstreamer-populate-stamp/vstreamer-populate-configure.rule"
+		},
+		{
+			"file" : "/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/vstreamer-subbuild/vstreamer-populate-prefix/src/vstreamer-populate-stamp/vstreamer-populate-download.rule"
+		},
+		{
+			"file" : "/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/vstreamer-subbuild/vstreamer-populate-prefix/src/vstreamer-populate-stamp/vstreamer-populate-install.rule"
+		},
+		{
+			"file" : "/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/vstreamer-subbuild/vstreamer-populate-prefix/src/vstreamer-populate-stamp/vstreamer-populate-mkdir.rule"
+		},
+		{
+			"file" : "/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/vstreamer-subbuild/vstreamer-populate-prefix/src/vstreamer-populate-stamp/vstreamer-populate-patch.rule"
+		},
+		{
+			"file" : "/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/vstreamer-subbuild/vstreamer-populate-prefix/src/vstreamer-populate-stamp/vstreamer-populate-test.rule"
+		},
+		{
+			"file" : "/home/ubuntu/development/gnd-esp32p4-feature-rx-latency/build-l3local/_deps/vstreamer-subbuild/vstreamer-populate-prefix/src/vstreamer-populate-stamp/vstreamer-populate-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"vstreamer-populate"
+		],
+		"name" : "vstreamer-populate"
+	}
+}
