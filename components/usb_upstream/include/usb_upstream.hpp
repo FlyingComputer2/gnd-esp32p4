@@ -10,6 +10,8 @@ esp_err_t usb_upstream_register(uint16_t channel, const char *name,
                                 std::shared_ptr<winject::UpstreamQueue> upstream,
                                 uint16_t mtu = 1445);
 esp_err_t usb_upstream_start();
+// Wakes the USB service now (a producer queued a packet) instead of at its next tick.
+void usb_upstream_wake();
 void usb_upstream_log_stats();
 #include <string>
 // Service-loop profile since the previous call (time per section, counters).

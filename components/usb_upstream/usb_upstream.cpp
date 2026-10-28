@@ -438,8 +438,19 @@ std::vector<uint8_t> next_record()
     return out;
 }
 #ifndef ROVER_USB_HOST_TEST
+// The service loop waits at most a tick, and is woken early when a USB IN
+// transfer completes (TX FIFO space) or a producer queued a packet: with a
+// fixed 1 ms sleep a frame burst drained a few records per tick, and video
+// waited ~8-10 ms on the ground before reaching the bus.
+TaskHandle_t service_task = nullptr;
+void wake_service()
+{
+    if (service_task)
+        xTaskNotifyGive(service_task);
+}
 void task(void *)
 {
+    service_task = xTaskGetCurrentTaskHandle();
     uint8_t bytes[512];
     pending.reserve(header_size + max_payload);
     for (;;)
@@ -499,7 +510,7 @@ void task(void *)
                 t.lap(p_drain);
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(1));
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1));
         t.lap(p_sleep);
     }
 }
@@ -613,6 +624,18 @@ esp_err_t usb_upstream_register_service(uint16_t id, const char *name,
     return ESP_OK;
 }
 #ifndef ROVER_USB_HOST_TEST
+extern "C" void tud_vendor_tx_cb(uint8_t idx, uint32_t sent_bytes)
+{
+    (void)idx;
+    (void)sent_bytes;
+    wake_service();
+}
+
+void usb_upstream_wake()
+{
+    wake_service();
+}
+
 esp_err_t usb_upstream_start()
 {
     if (installed)
