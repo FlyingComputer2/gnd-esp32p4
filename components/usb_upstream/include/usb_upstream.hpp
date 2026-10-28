@@ -11,6 +11,9 @@ esp_err_t usb_upstream_register(uint16_t channel, const char *name,
                                 uint16_t mtu = 1445);
 esp_err_t usb_upstream_start();
 void usb_upstream_log_stats();
+#include <string>
+// Service-loop profile since the previous call (time per section, counters).
+std::string usb_upstream_profile();
 
 #include <functional>
 #include <optional>

@@ -8,6 +8,9 @@
 #include "freertos/task.h"
 #include "tinyusb.h"
 #include "tinyusb_default_config.h"
+#include "esp_cpu.h"
+#include "esp_clk_tree.h"
+#include <atomic>
 #endif
 #include "cJSON.h"
 #include <array>
@@ -239,7 +242,10 @@ void on_record(const Record &r)
             }
             else
             {
-                for (unsigned j = 0; j < 32 && c->receive(); ++j)
+                // Start from live video: a backlog queued while the channel
+                // was closed would add a standing delay of up to the
+                // fanout capacity (~1 s at 6 Mbit/s).
+                for (unsigned j = 0; j < 1024 && c->receive(); ++j)
                 {
                 }
                 c->open = true;
@@ -341,17 +347,37 @@ void on_record(const Record &r)
     else
         fail();
 }
-std::vector<uint8_t> next_record()
+#ifndef ROVER_USB_HOST_TEST
+// Service-loop profile, in CPU cycles per section (wall time: includes
+// preemption); read and cleared by usb_upstream_profile().
+enum prof_section { p_lock, p_read, p_next, p_write, p_flush, p_drain, p_sleep, p_sections };
+std::array<std::atomic<uint64_t>, p_sections> prof_cycles{};
+std::atomic<uint32_t> prof_loops{0}, prof_records{0}, prof_bytes{0}, prof_partial{0},
+    prof_write_zero{0}, prof_next_empty{0}, prof_reads{0}, prof_read_bytes{0};
+struct prof_timer {
+    uint32_t start = esp_cpu_get_cycle_count();
+    void lap(prof_section s) {
+        const uint32_t now = esp_cpu_get_cycle_count();
+        prof_cycles[s] += now - start;
+        start = now;
+    }
+};
+#endif
+// Writes the next record into out (empty: nothing to send). DATA and CREDIT
+// records reuse out's capacity, so the service loop does not allocate per
+// packet: the heap lock is contended by the network and radio tasks.
+void next_record(std::vector<uint8_t> &out)
 {
+    out.clear();
     if (!session)
-        return {};
+        return;
     // Control priority is bounded, preserving DATA progress under valid load.
     if (!controls.empty() && control_burst < 4)
     {
-        auto p = std::move(controls.front());
+        out.assign(controls.front().begin(), controls.front().end());
         controls.pop_front();
         ++control_burst;
-        return p;
+        return;
     }
     for (size_t i = 0; i < count; ++i)
     {
@@ -361,9 +387,10 @@ std::vector<uint8_t> next_record()
             uint16_t n = c.pending_credit;
             c.pending_credit = 0;
             c.rx_credit += n;
-            std::vector<uint8_t> p(2);
-            put16(p.data(), n);
-            return encode({credit, c.id, session, 0, std::move(p)});
+            uint8_t p[2];
+            put16(p, n);
+            encode_into(out, credit, c.id, session, 0, p, sizeof(p));
+            return;
         }
     }
     for (size_t i = 0; i < count; ++i)
@@ -374,7 +401,7 @@ std::vector<uint8_t> next_record()
             if (c.open)
             {
                 fail();
-                return {};
+                return;
             }
             for (unsigned j = 0; j < 32 && c.receive(); ++j)
                 ++c.dropped;
@@ -394,30 +421,40 @@ std::vector<uint8_t> next_record()
         --c.tx_credit;
         ++c.up;
         control_burst = 0;
-        return encode(data, c.id, session, c.sequence, packet->u8(), packet->size());
+        encode_into(out, data, c.id, session, c.sequence, packet->u8(), packet->size());
+        return;
     }
     control_burst = 0;
     if (!controls.empty())
     {
-        auto p = std::move(controls.front());
+        out.assign(controls.front().begin(), controls.front().end());
         controls.pop_front();
-        return p;
     }
-    return {};
+}
+std::vector<uint8_t> next_record()
+{
+    std::vector<uint8_t> out;
+    next_record(out);
+    return out;
 }
 #ifndef ROVER_USB_HOST_TEST
 void task(void *)
 {
     uint8_t bytes[512];
+    pending.reserve(header_size + max_payload);
     for (;;)
     {
+        prof_timer t;
+        ++prof_loops;
         {
             std::lock_guard<std::mutex> lock(io);
+            t.lap(p_lock);
             if (tud_vendor_mounted())
             {
                 for (unsigned i = 0; i < 16 && tud_vendor_available(); ++i)
                 {
                     auto n = tud_vendor_read(bytes, sizeof(bytes));
+                    ++prof_reads; prof_read_bytes += n;
                     parser.feed(bytes, n, on_record);
                     if (parser.failed)
                     {
@@ -425,19 +462,31 @@ void task(void *)
                         break;
                     }
                 }
+                t.lap(p_read);
                 for (unsigned i = 0; i < 32; ++i)
                 {
                     if (pending.empty())
                     {
-                        pending = next_record();
+                        next_record(pending);
                         offset = 0;
+                        t.lap(p_next);
+                        if (pending.empty()) ++prof_next_empty;
+                        else ++prof_records;
                     }
                     if (pending.empty())
                         break;
-                    offset += tud_vendor_write(pending.data() + offset, pending.size() - offset);
+                    const auto wrote = tud_vendor_write(pending.data() + offset, pending.size() - offset);
+                    offset += wrote;
+                    prof_bytes += wrote;
+                    if (!wrote) ++prof_write_zero;
+                    t.lap(p_write);
                     tud_vendor_write_flush();
+                    t.lap(p_flush);
                     if (offset != pending.size())
+                    {
+                        ++prof_partial;
                         break;
+                    }
                     pending.clear();
                     offset = 0;
                 }
@@ -447,9 +496,11 @@ void task(void *)
                 for (size_t i = 0; i < count; ++i)
                     for (unsigned j = 0; j < 32 && channels[i].receive(); ++j)
                         ++channels[i].dropped;
+                t.lap(p_drain);
             }
         }
         vTaskDelay(pdMS_TO_TICKS(1));
+        t.lap(p_sleep);
     }
 }
 void event_cb(tinyusb_event_t *ev, void *)
@@ -571,8 +622,10 @@ esp_err_t usb_upstream_start()
     snprintf(serial, sizeof(serial), "%02x%02x%02x%02x%02x%02x", mac[0], mac[1], mac[2], mac[3],
              mac[4], mac[5]);
     auto cfg = TINYUSB_DEFAULT_CONFIG(event_cb);
+    // USB stays off core 0, which runs the radio, fanout and multicast
+    // tasks; a USB consumer starved them there (FEC failures, late video).
     cfg.task.priority = 16;
-    cfg.task.xCoreID = 0;
+    cfg.task.xCoreID = 1;
     cfg.descriptor.device = &device;
     cfg.descriptor.qualifier = &qualifier;
     cfg.descriptor.string = strings;
@@ -582,7 +635,8 @@ esp_err_t usb_upstream_start()
     auto err = tinyusb_driver_install(&cfg);
     if (err != ESP_OK)
         return err;
-    if (xTaskCreate(task, "usb_upstream", 8192, nullptr, 14, nullptr) != pdPASS)
+    // Below the video receiver (vs_recv, priority 13) on the same core.
+    if (xTaskCreatePinnedToCore(task, "usb_upstream", 8192, nullptr, 11, nullptr, 1) != pdPASS)
     {
         tinyusb_driver_uninstall();
         return ESP_ERR_NO_MEM;
@@ -601,3 +655,34 @@ void usb_upstream_log_stats()
                (unsigned long)c.up, (unsigned long)c.down, (unsigned long)c.dropped, c.tx_credit);
     }
 }
+
+#ifndef ROVER_USB_HOST_TEST
+std::string usb_upstream_profile()
+{
+    static const char *names[p_sections] = {"lock", "read", "next", "write", "flush", "drain", "sleep"};
+    uint32_t hz = 0;
+    esp_clk_tree_src_get_freq_hz(SOC_MOD_CLK_CPU, ESP_CLK_TREE_SRC_FREQ_PRECISION_CACHED, &hz);
+    const double us_per_cycle = hz ? 1e6 / hz : 0;
+    std::string out;
+    char buf[96];
+    double total = 0;
+    uint64_t c[p_sections];
+    for (int i = 0; i < p_sections; ++i) { c[i] = prof_cycles[i].exchange(0); total += c[i]; }
+    snprintf(buf, sizeof(buf), "window_ms=%.0f", total * us_per_cycle / 1000);
+    out += buf;
+    for (int i = 0; i < p_sections; ++i)
+    {
+        snprintf(buf, sizeof(buf), " %s_ms=%.1f", names[i], c[i] * us_per_cycle / 1000);
+        out += buf;
+    }
+    snprintf(buf, sizeof(buf), " loops=%u records=%u bytes=%u",
+        unsigned(prof_loops.exchange(0)), unsigned(prof_records.exchange(0)), unsigned(prof_bytes.exchange(0)));
+    out += buf;
+    snprintf(buf, sizeof(buf), " partial=%u write_zero=%u next_empty=%u reads=%u read_bytes=%u",
+        unsigned(prof_partial.exchange(0)), unsigned(prof_write_zero.exchange(0)),
+        unsigned(prof_next_empty.exchange(0)), unsigned(prof_reads.exchange(0)),
+        unsigned(prof_read_bytes.exchange(0)));
+    out += buf;
+    return out;
+}
+#endif

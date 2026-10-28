@@ -35,12 +35,15 @@ struct Record
     uint32_t session, sequence;
     std::vector<uint8_t> payload;
 };
-// Build the final wire record directly from immutable payload storage.
-inline std::vector<uint8_t> encode(Kind kind, uint16_t channel, uint32_t session,
-                                  uint32_t sequence, const uint8_t *payload, size_t size)
+// Build the final wire record directly from immutable payload storage into
+// out, reusing its capacity (no allocation once it has grown). Leaves out
+// empty for an invalid payload.
+inline void encode_into(std::vector<uint8_t> &out, Kind kind, uint16_t channel, uint32_t session,
+                        uint32_t sequence, const uint8_t *payload, size_t size)
 {
-    if (size > max_payload || (size && !payload)) return {};
-    std::vector<uint8_t> out(header_size + size);
+    out.clear();
+    if (size > max_payload || (size && !payload)) return;
+    out.resize(header_size + size);
     memcpy(out.data(), "RGP4", 4);
     out[4] = 2;
     out[5] = kind;
@@ -49,6 +52,12 @@ inline std::vector<uint8_t> encode(Kind kind, uint16_t channel, uint32_t session
     put32(out.data() + 12, session);
     put32(out.data() + 16, sequence);
     if (size) memcpy(out.data() + header_size, payload, size);
+}
+inline std::vector<uint8_t> encode(Kind kind, uint16_t channel, uint32_t session,
+                                  uint32_t sequence, const uint8_t *payload, size_t size)
+{
+    std::vector<uint8_t> out;
+    encode_into(out, kind, channel, session, sequence, payload, size);
     return out;
 }
 inline std::vector<uint8_t> encode(const Record &r)
