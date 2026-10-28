@@ -1,9 +1,11 @@
-// Guition ground radio: Ethernet/OTA, C6 SDIO proxy, L3 video upstream and USB.
+// Guition ground radio: Ethernet/OTA, C6 SDIO proxy, L3 and USB.
+// L3 upstreams: 0 video, 1 bandwidth tester (app_bwtest, UDP console 5100).
 // USB IDs: 0 video, 1 MSP DisplayPort (TBA), 2 MSP RC telemetry (TBA).
 #include <inttypes.h>
 #include <stdio.h>
 
 #include "WinjectL3.h"
+#include "apps/bwtest/Bwtest.h"
 #include "esp_eth.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
@@ -61,6 +63,32 @@ void print_cpu() {
     }
     previous = std::move(next); previous_us = now;
     printf("GROUND_CPU%s\n", line.c_str());
+}
+
+// Runs app_bwtest on its upstream's queue. Its sender and receive poller
+// inherit this thread's settings: low priority, unpinned, so video wins.
+void start_bwtest(std::shared_ptr<winject::UpstreamQueue> up) {
+    static bool started = false;
+    if (started) {
+        ESP_LOGW(TAG, "bwtest upstream replaced; restart to rebind the tester");
+        return;
+    }
+    started = true;
+    esp_pthread_cfg_t prev {};
+    const bool had_prev = esp_pthread_get_cfg(&prev) == ESP_OK;
+    auto cfg = esp_pthread_get_default_config();
+    cfg.stack_size = 6 * 1024;
+    cfg.prio = 5;
+    cfg.thread_name = "bwtest";
+    cfg.inherit_cfg = true;
+    esp_pthread_set_cfg(&cfg);
+    std::thread([up = std::move(up)] {
+        app_bwtest::Config bw;
+        bw.upstream = up;
+        bw.console = "0.0.0.0:5100";
+        printf("GROUND_BWTEST_EXIT rc=%d\n", app_bwtest::main(bw));
+    }).detach();
+    if (had_prev) esp_pthread_set_cfg(&prev);
 }
 
 void start_radio_queues() {
@@ -156,9 +184,10 @@ static void *l3_main(void *)
     cfg.radio_device.dplane_rx = radio_rx_name;
     cfg.radio_device.reactor = radio_reactor_name;
     cfg.radio_device.fcs = winject::RadioFcsConfig::signal;
-    cfg.console_in = "127.0.0.1:2400";
+    // Reachable over Ethernet for lur/lut during tests; no authentication.
+    cfg.console_in = "0.0.0.0:2400";
     winject::UpstreamConfig video;
-    video.index = 1; // Existing rover video upstream; USB ID is independently 0.
+    video.index = 0; // USB ID is independently 0.
     video.mode = winject::UpstreamMode::queue;
     video.bus_tx = 0xd4;
     video.bus_rx = 0xc3;
@@ -166,9 +195,22 @@ static void *l3_main(void *)
     video.scheduler_budget = 4096;
     video.fec_type = winject::FecType::none; // vstreamer FEC terminates at the P4 receiver.
     cfg.upstreams.push_back(video);
+    winject::UpstreamConfig bwtest;
+    bwtest.index = 1; // Rover upstream 1 with the buses swapped.
+    bwtest.mode = winject::UpstreamMode::queue;
+    bwtest.bus_tx = 0xe5;
+    bwtest.bus_rx = 0xf6;
+    bwtest.rx_queue_capacity = 256;
+    bwtest.scheduler_budget = 4096;
+    bwtest.fec_type = winject::FecType::none; // Clean loss counts.
+    cfg.upstreams.push_back(bwtest);
     cfg.on_upstream_queue = [](size_t index, std::shared_ptr<winject::UpstreamQueue> up)
     {
         if (index == 1)
+        {
+            start_bwtest(std::move(up));
+        }
+        else if (index == 0)
         {
             ESP_ERROR_CHECK(ground_video_start(std::move(up)));
             ESP_ERROR_CHECK(usb_upstream_start());

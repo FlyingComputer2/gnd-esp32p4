@@ -41,10 +41,13 @@ Normal C6 firmware is unchanged. Connect Android in USB host/OTG mode to the
 board's **High Speed USB (USB3)** port; use CH340 for flash and logs.
 
 L3 uses the local SDIO proxy through in-process radio queues; management uses loopback UDP 22. Its video upstream
-index is 1, TX bus d4, RX bus c3, domain 0xB00B, channel 1, OFDM_24M, 15 dBm.
+index is 0, TX bus d4, RX bus c3, domain 0xB00B, channel 1, OFDM_24M, 15 dBm.
+Upstream 1 (TX e5, RX f6, no FEC) is the bandwidth tester, app_bwtest, with its UDP
+console on 5100 (`test_send <offer_kbps> <duration_ms>`, `stats`, `clr`; see the
+rover-remote-esp32p4 README).
 These must match the rover (with buses swapped). Video has no manager-level FEC;
 vstreamer's FEC terminates at the ground P4; P4 returns receiver feedback. The manager console is bound to
-127.0.0.1:2400. Do not run a second Ethernet L3 manager against this radio:
+0.0.0.0:2400 (no authentication; Ethernet is an internal link). Do not run a second Ethernet L3 manager against this radio:
 the underlying radio proxy has a single peer per plane.
 
 L3 creates the `UpstreamQueue` for the video upstream (no queue names in its
