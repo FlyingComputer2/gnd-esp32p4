@@ -79,6 +79,20 @@ credits. One record is one application datagram. Independent credits and bounded
 queues isolate stalled consumers; records are scheduled round-robin. Admission
 is lossy and provides no end-to-end delivery acknowledgement.
 
+The ground serves a vstreamer mplane on UDP 5090 (same grammar as the rover's;
+no authentication). Latency is the capture age of each completed AU (RTP capture
+extension against the ground's CLOCK_REALTIME, the sync reference):
+
+```sh
+echo "get rcv latency_stats"   | nc -u -w1 <ground> 5090   # camera -> stream_receiver output(); node_* = time inside the receiver
+echo "get mcast latency_stats" | nc -u -w1 <ground> 5090   # camera -> after the multicast sendto()
+echo "get gnd stats"           | nc -u -w1 <ground> 5090   # GROUND_VIDEO counters and fanout queue depths
+```
+
+`latency_stats` covers the AUs since the previous query; `get rcv latency_ms` and
+`get rcv node_latency_ms` give the last AU. Other `get|set rcv <key>` go to
+`stream_receiver`. Use this instead of the CH340 log: opening that port resets the P4.
+
 `GROUND_READY usb=v2 video=0 ...` indicates the USB interface started after L3
 published its video transport. `GROUND_USB channel=...` reports local counters.
 `GROUND_L3_EXIT` indicates the manager stopped; reconnect/reset after recovery.

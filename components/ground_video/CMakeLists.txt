@@ -21,8 +21,10 @@ if(NOT CMAKE_BUILD_EARLY_EXPANSION)
     file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/generated/components/stream_receiver.hpp "${rx_header}")
 endif()
 idf_component_register(SRCS "ground_video.cpp" ${VSTREAMER_SOURCES}
+    ${rx_root}/idf/vstreamer/src/live_mplane.cpp
     ${VSTREAMER_ISAL_ROOT}/erasure_code/ec_base.c
     INCLUDE_DIRS "include" ${CMAKE_CURRENT_BINARY_DIR}/generated ${rx_root}/src
+                 ${rx_root}/idf/vstreamer/include
                  ${bfc_SOURCE_DIR}/src
     PRIV_INCLUDE_DIRS ${rx_root}/idf/vstreamer/compat ${VSTREAMER_ISAL_ROOT}/include ${VSTREAMER_ISAL_ROOT}/erasure_code
     REQUIRES usb_upstream lwip pthread
