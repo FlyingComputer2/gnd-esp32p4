@@ -43,9 +43,9 @@ if(NOT isa-l_POPULATED)
 endif()
 set(VSTREAMER_ISAL_ROOT ${isa-l_SOURCE_DIR})
 
-# Clock sync (ground = SynchServer, the reference). Private repo: SSH.
+# Clock sync (ground = SynchServer, the reference).
 FetchContent_Declare(krono
-    GIT_REPOSITORY git@github.com:FlyingComputer2/krono.git
+    GIT_REPOSITORY https://github.com/FlyingComputer2/krono.git
     GIT_TAG c7dc5caaca89d93467ddb2dfb349a8f7ef30f005)
 FetchContent_GetProperties(krono)
 if(NOT krono_POPULATED)
