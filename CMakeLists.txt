@@ -43,8 +43,18 @@ if(NOT isa-l_POPULATED)
 endif()
 set(VSTREAMER_ISAL_ROOT ${isa-l_SOURCE_DIR})
 
+# Clock sync (ground = SynchServer, the reference). Private repo: SSH.
+FetchContent_Declare(krono
+    GIT_REPOSITORY git@github.com:FlyingComputer2/krono.git
+    GIT_TAG c7dc5caaca89d93467ddb2dfb349a8f7ef30f005)
+FetchContent_GetProperties(krono)
+if(NOT krono_POPULATED)
+    FetchContent_Populate(krono)
+endif()
+
 set(EXTRA_COMPONENT_DIRS ${WINJECT_SDIO_PROXY_COMPONENT_DIRS}
                          ${winject_l3_SOURCE_DIR}/idf/winject_l3
-                         ${winject_l3_SOURCE_DIR}/idf/app_bwtest)
+                         ${winject_l3_SOURCE_DIR}/idf/app_bwtest
+                         ${krono_SOURCE_DIR}/idf/krono)
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(gnd-esp32p4)

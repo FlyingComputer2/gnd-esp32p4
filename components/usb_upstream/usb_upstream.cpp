@@ -25,10 +25,16 @@ struct Channel
     std::string name;
     std::shared_ptr<winject::UpstreamQueue> upstream;
     UsbPacketSource source;
+    UsbPacketSink sink;
     std::function<bool()> source_connected;
     std::string format;
     bool connected() const { return upstream ? upstream->connected() : source_connected(); }
     auto receive() { return upstream ? upstream->receive() : source(); }
+    bool read_only() const { return !upstream && !sink; }
+    bool send(const uint8_t *data, size_t len)
+    {
+        return upstream ? upstream->try_send(data, len) : sink(data, len);
+    }
     bool open = false, closed = false;
     uint32_t sequence = 0, down = 0, up = 0, dropped = 0;
 };
@@ -206,7 +212,7 @@ void on_record(const Record &r)
                 cJSON_AddNumberToObject(item, "max_payload", c.mtu);
                 cJSON_AddBoolToObject(item, "ready", c.connected());
                 if (!c.format.empty()) cJSON_AddStringToObject(item, "format", c.format.c_str());
-                cJSON_AddBoolToObject(item, "read_only", !c.upstream);
+                cJSON_AddBoolToObject(item, "read_only", c.read_only());
                 cJSON_AddItemToArray(list, item);
             }
             if (end < count)
@@ -246,7 +252,7 @@ void on_record(const Record &r)
                 cJSON_AddNumberToObject(out, "rx_window", 8);
                 cJSON_AddNumberToObject(out, "max_payload", c->mtu);
                 if (!c->format.empty()) cJSON_AddStringToObject(out, "format", c->format.c_str());
-                cJSON_AddBoolToObject(out, "read_only", !c->upstream);
+                cJSON_AddBoolToObject(out, "read_only", c->read_only());
             }
         }
         else if (!strcmp(op->valuestring, "close"))
@@ -320,13 +326,13 @@ void on_record(const Record &r)
     }
     else if (r.kind == data)
     {
-        if (!c->upstream || !c->rx_credit || r.payload.size() > c->mtu)
+        if (c->read_only() || !c->rx_credit || r.payload.size() > c->mtu)
         {
             fail();
             return;
         }
         --c->rx_credit;
-        if (c->upstream->try_send(r.payload.data(), r.payload.size()))
+        if (c->send(r.payload.data(), r.payload.size()))
             ++c->down;
         else
             ++c->dropped;
@@ -539,6 +545,20 @@ esp_err_t usb_upstream_register_source(uint16_t id, const char *name,
     auto &c = channels[count++];
     c.id = id; c.name = name; c.mtu = mtu; c.format = format;
     c.source = std::move(source); c.source_connected = std::move(connected);
+    return ESP_OK;
+}
+esp_err_t usb_upstream_register_service(uint16_t id, const char *name,
+    UsbPacketSource source, UsbPacketSink sink, std::function<bool()> connected,
+    const char *format, uint16_t mtu)
+{
+    if (!sink)
+        return ESP_ERR_INVALID_ARG;
+    const esp_err_t err = usb_upstream_register_source(id, name, std::move(source),
+                                                       std::move(connected), format, mtu);
+    if (err != ESP_OK)
+        return err;
+    std::lock_guard<std::mutex> lock(io);
+    find(id)->sink = std::move(sink);
     return ESP_OK;
 }
 #ifndef ROVER_USB_HOST_TEST
