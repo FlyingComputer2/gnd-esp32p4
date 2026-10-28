@@ -40,11 +40,25 @@ The app retains the existing two OTA partitions and Ethernet HTTP OTA support.
 Normal C6 firmware is unchanged. Connect Android in USB host/OTG mode to the
 board's **High Speed USB (USB3)** port; use CH340 for flash and logs.
 
-L3 uses the local SDIO proxy through in-process radio queues; management uses loopback UDP 22. Its video upstream
-index is 0, TX bus d4, RX bus c3, domain 0xB00B, channel 1, OFDM_24M, 15 dBm.
-Upstream 1 (TX e5, RX f6, no FEC) is the bandwidth tester, app_bwtest, with its UDP
-console on 5100 (`test_send <offer_kbps> <duration_ms>`, `stats`, `clr`; see the
-rov-esp32p4 README).
+L3 uses the local SDIO proxy through in-process radio queues; management uses loopback UDP 22. Domain 0xB00B,
+channel 1, OFDM_24M, 15 dBm. Upstreams (buses follow the flow, not the index):
+
+| id | Stream | Buses (tx / rx) | FEC |
+|----|--------|-----------------|-----|
+| 0 | Clock sync, krono SynchServer (reference clock), UDP console 5110 | a1 / b2 | none |
+| 1 | Video | d4 / c3 | none (vstreamer's own) |
+| 2 | Bandwidth tester, app_bwtest, UDP console 5100 (`test_send <offer_kbps> <duration_ms>`, `stats`, `clr`) | e5 / f6 | none |
+
+USB channel 3, `sync` (format `synch-v1`), answers the Android app's krono synch rtt requests against this board's
+clock, so the app can show camera-to-decode latency (see gnd-android `docs/USB_PROTOCOL.md`). This board's
+`CLOCK_REALTIME` follows the GS host's chrony over SNTP (`sntp_server` in `main/main.cpp`, now the opi5
+192.168.253.106), so rover capture stamps also compare directly with the opi5's decoder.
+
+The rover runs the krono SynchClient ([FlyingComputer2/krono](https://github.com/FlyingComputer2/krono)). It steers its clock to this board's `CLOCK_REALTIME`, which is never
+written. Interrupt mode uses a sync wire from rover GPIO20 (header pin 13) to **GPIO20, JP1 pin 17** here, with GND
+on JP1 pin 6. The wire is active low and Hi-Z at rest: the rover's pin is open drain, and this pin is an input
+with the internal pull-up and a falling-edge interrupt. Console `status` on UDP 5110; protocol in krono
+`docs/synch.md`, usage in the rov-esp32p4 README.
 These must match the rover (with buses swapped). Video has no manager-level FEC;
 vstreamer's FEC terminates at the ground P4; P4 returns receiver feedback. The manager console is bound to
 0.0.0.0:2400 (no authentication; Ethernet is an internal link). Do not run a second Ethernet L3 manager against this radio:
@@ -109,7 +123,7 @@ and invalid traffic. A PyUSB bench client is in `tools/usb-radio/smoke.py`.
 
 Jumpers on JP1: **GPIO32 → pin 20 (C6 U0RXD)**, **GPIO33 → pin 22 (C6 U0TXD)**, **GPIO45 → pin 24 (C6 IO9)**.
 
-The bridge also builds for the rover's Waveshare ESP32-P4-WIFI6-DEV-KIT. There the C6 UART is wired the other way round (C6 U0TXD → GPIO32, U0RXD → GPIO33), and its boot strap is on GPIO22. The P4 is rev v3.x:
+The bridge also builds for the rover's Waveshare ESP32-P4-WIFI6-DEV-KIT. Its C6 UART is now wired like the Guition: GPIO32 → C6 U0RXD, GPIO33 ← C6 U0TXD (the wires used to be the other way round). Its boot strap is on GPIO22, and the P4 is rev v3.x:
 
 ```bash
 idf.py -B build-waveshare -D SDKCONFIG=build-waveshare/sdkconfig \

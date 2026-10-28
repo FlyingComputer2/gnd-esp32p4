@@ -1,11 +1,15 @@
 // Guition ground radio: Ethernet/OTA, C6 SDIO proxy, L3 and USB.
-// L3 upstreams: 0 video, 1 bandwidth tester (app_bwtest, UDP console 5100).
-// USB IDs: 0 video, 1 MSP DisplayPort (TBA), 2 MSP RC telemetry (TBA).
+// L3 upstreams: 0 clock sync (krono SynchServer, UDP console 5110), 1 video,
+// 2 bandwidth tester (app_bwtest, UDP console 5100). Buses as on the rover,
+// swapped: sync a1/b2, video d4/c3, tester e5/f6.
+// USB IDs: 0 video, 1 MSP DisplayPort (TBA), 2 MSP RC telemetry (TBA), 3 sync
+// (krono synch requests from the Android app, answered against this board's clock).
 #include <inttypes.h>
 #include <stdio.h>
 
 #include "WinjectL3.h"
 #include "apps/bwtest/Bwtest.h"
+#include "synch/SynchGpio.h"
 #include "esp_eth.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
@@ -14,6 +18,8 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_netif_sntp.h"
+#include "esp_sntp.h"
 #include "esp_pthread.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -24,6 +30,7 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <bfc/cv_reactor.hpp>
+#include <deque>
 #include <thread>
 
 static const char *TAG = "rover_ground";
@@ -91,6 +98,81 @@ void start_bwtest(std::shared_ptr<winject::UpstreamQueue> up) {
     if (had_prev) esp_pthread_set_cfg(&prev);
 }
 
+// krono's datagram transport over an L3-owned upstream queue.
+krono::Transport synch_transport(std::shared_ptr<winject::UpstreamQueue> up) {
+    return krono::Transport{
+        [up](const uint8_t *data, size_t len) { return up->try_send(data, len); },
+        [up](std::vector<uint8_t> *out) {
+            auto packet = up->receive();
+            if (!packet) return false;
+            const auto *p = reinterpret_cast<const uint8_t *>(packet->data());
+            out->assign(p, p + packet->size());
+            return true;
+        }};
+}
+
+// Runs the clock-sync server, the reference clock, on its upstream's queue.
+// The rover's sync pulse arrives on GPIO20 (JP1 pin 17): active low, Hi-Z at
+// rest, pulled up here. Priority 12 so replies are stamped promptly.
+constexpr int synch_capture_gpio = 20;
+void start_synch(std::shared_ptr<winject::UpstreamQueue> up) {
+    static bool started = false;
+    if (started) {
+        ESP_LOGW(TAG, "synch upstream replaced; restart to rebind the server");
+        return;
+    }
+    started = true;
+    esp_pthread_cfg_t prev {};
+    const bool had_prev = esp_pthread_get_cfg(&prev) == ESP_OK;
+    auto cfg = esp_pthread_get_default_config();
+    cfg.stack_size = 6 * 1024;
+    cfg.prio = 12;
+    cfg.thread_name = "synch";
+    cfg.inherit_cfg = true;
+    esp_pthread_set_cfg(&cfg);
+    std::thread([up = std::move(up)] {
+        krono::ServerConfig sc;
+        sc.transport = synch_transport(up);
+        sc.edges = krono::start_gpio_edge_capture(synch_capture_gpio);
+        sc.console = "0.0.0.0:5110";
+        printf("GROUND_SYNCH_EXIT rc=%d\n", krono::server_main(sc));
+    }).detach();
+    if (had_prev) esp_pthread_set_cfg(&prev);
+}
+
+// USB channel 3 "sync": the Android app runs a SynchClient against this
+// board's clock, the same reference the rover follows, so it can turn the
+// rover's RTP capture stamps into latency. Requests are answered as they
+// arrive, under the USB lock; replies wait for the channel's next DATA slot.
+constexpr uint16_t usb_synch_channel = 3;
+std::deque<bfc::shared_sized_buffer> usb_synch_replies;
+// Fed only through answer(): rtt requests, no wire.
+krono::SynchServer usb_synch({});
+
+bool answer_usb_synch(const uint8_t *data, size_t len) {
+    uint8_t reply[krono::k_response_bytes];
+    const size_t n = usb_synch.answer(data, len, reply);
+    if (n) {
+        // A client waits for one reply at a time; keep the newest few.
+        if (usb_synch_replies.size() >= 4) usb_synch_replies.pop_front();
+        usb_synch_replies.push_back(bfc::shared_sized_buffer::copy_from(reply, n));
+    }
+    return true;
+}
+
+void register_usb_synch() {
+    const esp_err_t err = usb_upstream_register_service(usb_synch_channel, "sync",
+        []() -> std::optional<bfc::shared_sized_buffer> {
+            if (usb_synch_replies.empty()) return std::nullopt;
+            auto reply = std::move(usb_synch_replies.front());
+            usb_synch_replies.pop_front();
+            return reply;
+        },
+        answer_usb_synch,
+        [] { return true; }, "synch-v1", 64);
+    if (err != ESP_OK) printf("GROUND_USB_SYNCH register failed err=0x%x\n", err);
+}
+
 void start_radio_queues() {
     radio_tx = std::make_shared<winject::ReactiveLossyQueue>();
     radio_rx = std::make_shared<winject::ReactiveLossyQueue>();
@@ -115,6 +197,34 @@ void start_radio_queues() {
 }
 
 
+// The ground's CLOCK_REALTIME is the rover's sync reference (krono synch), so
+// it follows the GS host's chrony (the opi5, which decodes the video): rover
+// capture stamps then compare directly with the decoder's clock. Smooth mode
+// steps the first sync and slews after; lwIP does not compensate round
+// trip, so it sits one LAN one-way delay off.
+constexpr const char *sntp_server = "192.168.253.106";
+constexpr uint32_t sntp_interval_ms = 16000; // RFC 4330 floor is 15 s.
+
+static void on_sntp_sync(struct timeval *tv)
+{
+    printf("GROUND_SNTP synced server=%s time=%lld.%06ld\n", sntp_server,
+           static_cast<long long>(tv->tv_sec), static_cast<long>(tv->tv_usec));
+}
+
+static void start_sntp(void)
+{
+    static bool started = false;
+    if (started) return;
+    started = true;
+    esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG(sntp_server);
+    cfg.smooth_sync = true;
+    cfg.sync_cb = on_sntp_sync;
+    sntp_set_sync_interval(sntp_interval_ms);
+    if (esp_netif_sntp_init(&cfg) != ESP_OK) {
+        printf("GROUND_SNTP init failed\n");
+    }
+}
+
 #define ETH_PHY_ADDR 1
 #define ETH_PHY_RESET_GPIO 51
 
@@ -124,6 +234,7 @@ static void on_got_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
     const auto *ev = static_cast<const ip_event_got_ip_t *>(data);
     ground_video_set_ethernet(ev->ip_info.ip.addr);
     printf("GROUND_IP ip=" IPSTR "\n", IP2STR(&ev->ip_info.ip));
+    start_sntp();
     fflush(stdout);
 }
 
@@ -186,8 +297,17 @@ static void *l3_main(void *)
     cfg.radio_device.fcs = winject::RadioFcsConfig::signal;
     // Reachable over Ethernet for lur/lut during tests; no authentication.
     cfg.console_in = "0.0.0.0:2400";
+    winject::UpstreamConfig synch;
+    synch.index = 0; // Rover upstream 0 with the buses swapped.
+    synch.mode = winject::UpstreamMode::queue;
+    synch.bus_tx = 0xa1;
+    synch.bus_rx = 0xb2;
+    synch.rx_queue_capacity = 16;
+    synch.scheduler_budget = 256;
+    synch.fec_type = winject::FecType::none; // A lost exchange is a timeout.
+    cfg.upstreams.push_back(synch);
     winject::UpstreamConfig video;
-    video.index = 0; // USB ID is independently 0.
+    video.index = 1; // USB ID is independently 0.
     video.mode = winject::UpstreamMode::queue;
     video.bus_tx = 0xd4;
     video.bus_rx = 0xc3;
@@ -196,7 +316,7 @@ static void *l3_main(void *)
     video.fec_type = winject::FecType::none; // vstreamer FEC terminates at the P4 receiver.
     cfg.upstreams.push_back(video);
     winject::UpstreamConfig bwtest;
-    bwtest.index = 1; // Rover upstream 1 with the buses swapped.
+    bwtest.index = 2; // Rover upstream 2 with the buses swapped.
     bwtest.mode = winject::UpstreamMode::queue;
     bwtest.bus_tx = 0xe5;
     bwtest.bus_rx = 0xf6;
@@ -206,15 +326,19 @@ static void *l3_main(void *)
     cfg.upstreams.push_back(bwtest);
     cfg.on_upstream_queue = [](size_t index, std::shared_ptr<winject::UpstreamQueue> up)
     {
-        if (index == 1)
+        if (index == 0)
         {
-            start_bwtest(std::move(up));
+            start_synch(std::move(up));
         }
-        else if (index == 0)
+        else if (index == 1)
         {
             ESP_ERROR_CHECK(ground_video_start(std::move(up)));
             ESP_ERROR_CHECK(usb_upstream_start());
-            printf("GROUND_READY usb=v2 video=0 msp_displayport=1:tba msp_rc_telemetry=2:tba\n");
+            printf("GROUND_READY usb=v2 video=0 msp_displayport=1:tba msp_rc_telemetry=2:tba sync=3\n");
+        }
+        else if (index == 2)
+        {
+            start_bwtest(std::move(up));
         }
     };
     int rc = winject_l3::main(cfg);
@@ -241,6 +365,7 @@ extern "C" void app_main(void)
     }
 
     start_radio_queues();
+    register_usb_synch();
     winject_proxy_config_t cfg = WINJECT_PROXY_CONFIG_DEFAULT();
     cfg.dplane_tx_queue = radio_tx_name;
     cfg.dplane_rx_queue = radio_rx_name;
@@ -273,6 +398,10 @@ extern "C" void app_main(void)
         sdio_link_host_stats_t ls;
         winject_proxy_get_stats(&ps);
         usb_upstream_log_stats();
+        const auto us = usb_synch.stats();
+        printf("GROUND_USB_SYNCH requests=%llu replies=%llu bad=%llu\n",
+               (unsigned long long)us.requests, (unsigned long long)us.replies,
+               (unsigned long long)us.bad);
         print_cpu();
         ground_video_log_stats();
         printf("GROUND_HEAP internal=%u internal_largest=%u psram=%u\n",

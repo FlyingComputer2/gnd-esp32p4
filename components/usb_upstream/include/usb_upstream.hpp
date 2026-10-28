@@ -20,3 +20,11 @@ using UsbPacketSource = std::function<std::optional<bfc::shared_sized_buffer>()>
 esp_err_t usb_upstream_register_source(uint16_t channel, const char *name,
     UsbPacketSource receive, std::function<bool()> connected, const char *format,
     uint16_t mtu = 1445);
+
+// A local bidirectional service: inbound DATA goes to send (false counts a
+// drop), outbound DATA comes from receive. Both callbacks must be nonblocking;
+// they are invoked under the USB service lock.
+using UsbPacketSink = std::function<bool(const uint8_t *data, size_t len)>;
+esp_err_t usb_upstream_register_service(uint16_t channel, const char *name,
+    UsbPacketSource receive, UsbPacketSink send, std::function<bool()> connected,
+    const char *format, uint16_t mtu = 1445);
