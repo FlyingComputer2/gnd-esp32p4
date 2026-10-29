@@ -11,12 +11,9 @@
 
 static const char *TAG = "c6_bridge";
 
-// P4 UART1 <-> C6 UART0 on GPIO32/33, the same on both boards: GPIO32 -> C6
-// U0RXD, GPIO33 <- C6 U0TXD (Guition JP1 pins 20 / 22; the Waveshare's wires
-// were swapped to match).
+// P4 UART1 <-> C6 UART0. Board-specific pins are selected below; the
+// Guition wiring stays on GPIO32/33 and the Waveshare uses GPIO46/48.
 #define C6_UART_PORT      UART_NUM_1
-#define C6_UART_TX_GPIO   GPIO_NUM_32
-#define C6_UART_RX_GPIO   GPIO_NUM_33
 #define C6_UART_BAUD      115200
 
 #define HOST_UART_PORT    UART_NUM_0
@@ -25,9 +22,13 @@ static const char *TAG = "c6_bridge";
 
 #define C6_RESET_GPIO     GPIO_NUM_54
 #if CONFIG_C6_BRIDGE_BOARD_WAVESHARE
-#define C6_BOOT_GPIO      GPIO_NUM_22
-#define C6_BOOT_GPIO_LDO  -1  // GPIO22 is outside the LDO-powered GPIO39-48 domain
+#define C6_UART_TX_GPIO   GPIO_NUM_46
+#define C6_UART_RX_GPIO   GPIO_NUM_48
+#define C6_BOOT_GPIO      GPIO_NUM_47
+#define C6_BOOT_GPIO_LDO  4
 #else
+#define C6_UART_TX_GPIO   GPIO_NUM_32
+#define C6_UART_RX_GPIO   GPIO_NUM_33
 #define C6_BOOT_GPIO      GPIO_NUM_45
 #define C6_BOOT_GPIO_LDO  4
 #endif

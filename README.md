@@ -147,7 +147,7 @@ and invalid traffic. A PyUSB bench client is in `tools/usb-radio/smoke.py`.
 
 Jumpers on JP1: **GPIO32 → pin 20 (C6 U0RXD)**, **GPIO33 → pin 22 (C6 U0TXD)**, **GPIO45 → pin 24 (C6 IO9)**.
 
-The bridge also builds for the rover's Waveshare ESP32-P4-WIFI6-DEV-KIT. Its C6 UART is now wired like the Guition: GPIO32 → C6 U0RXD, GPIO33 ← C6 U0TXD (the wires used to be the other way round). Its boot strap is on GPIO22, and the P4 is rev v3.x:
+The bridge also builds for the rover's Waveshare ESP32-P4-WIFI6-DEV-KIT. Its wiring is GPIO46 → C6 U0RXD, GPIO48 ← C6 U0TXD, and GPIO47 → C6 GPIO9 (boot strap), with LDO_VO4 at 3.3 V. The Guition retains GPIO32/33 and boot GPIO45. The Waveshare P4 is rev v3.x:
 
 ```bash
 idf.py -B build-waveshare -D SDKCONFIG=build-waveshare/sdkconfig \
