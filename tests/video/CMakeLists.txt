@@ -5,7 +5,7 @@ include(FetchContent)
 FetchContent_Declare(vstreamer GIT_REPOSITORY https://github.com/FlyingComputer2/vstreamer.git
     GIT_TAG e4fd44853249b74113b76f4ff668d87c5b3b8deb)
 FetchContent_Declare(bfc GIT_REPOSITORY https://github.com/therooftopprinz/BFC.git
-    GIT_TAG 6c02a495d1a2cf4a8a13dfa6b25b342780527c89)
+    GIT_TAG f6fe9784bb8379eaa72a1597fe9e9638b97fb5fe)
 FetchContent_Declare(isa-l GIT_REPOSITORY https://github.com/intel/isa-l.git GIT_TAG v2.31.1 GIT_SHALLOW TRUE)
 foreach(dep vstreamer bfc isa-l)
     FetchContent_GetProperties(${dep})
