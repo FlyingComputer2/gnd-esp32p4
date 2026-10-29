@@ -341,6 +341,14 @@ static void *l3_main(void *)
             start_bwtest(std::move(up));
         }
     };
+    // winject-l3 starts its upstream reactor with std::thread from this thread;
+    // that reactor drains every upstream's RX queue. With the default pthread
+    // config it ran at priority 5 under ground_radio (14), and at 10 Mbit/s
+    // the video RX queue evicted ~10% of frames, which L3 counts as air gaps.
+    auto upstream_cfg = esp_pthread_get_default_config();
+    upstream_cfg.prio = 14;
+    upstream_cfg.thread_name = "l3_upstream";
+    ESP_ERROR_CHECK(esp_pthread_set_cfg(&upstream_cfg));
     int rc = winject_l3::main(cfg);
     printf("GROUND_L3_EXIT rc=%d\n", rc);
     return nullptr;
