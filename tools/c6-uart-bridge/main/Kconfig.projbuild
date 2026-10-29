@@ -4,15 +4,16 @@ choice C6_BRIDGE_BOARD
     prompt "Board"
     default C6_BRIDGE_BOARD_GUITION
     help
-        Both boards wire the C6's UART0 to P4 GPIO32 (C6 U0RXD) / GPIO33
-        (C6 U0TXD) and its CHIP_PU to GPIO54. They differ only in the C6
-        GPIO9 (boot strap) pin.
+        Guition uses P4 GPIO32 TX / GPIO33 RX and GPIO45 for C6 BOOT.
+        Waveshare uses P4 GPIO46 TX / GPIO48 RX and GPIO47 for C6 BOOT.
+        Both boards connect C6 CHIP_PU to P4 GPIO54 and need LDO_VO4
+        at 3.3 V for the boot strap's IO domain.
 
 config C6_BRIDGE_BOARD_GUITION
     bool "Guition JC-ESP32P4-M3-DEV (boot strap GPIO45, LDO_VO4)"
 
 config C6_BRIDGE_BOARD_WAVESHARE
-    bool "Waveshare ESP32-P4-WIFI6-DEV-KIT (boot strap GPIO22)"
+    bool "Waveshare ESP32-P4-WIFI6-DEV-KIT (TX46/RX48, boot GPIO47, LDO_VO4)"
 
 endchoice
 
