@@ -170,3 +170,20 @@ idf.py -p /dev/ttyUSB0 flash monitor
 ```
 
 The C6 on this module is an ESP32-C6FH4 (4 MB flash), which winject-radio-esp32c6's 4 MB partition table fits. Save the stock image first if you want it back: `esptool.py … read_flash 0 0x400000 c6-stock.bin` at step 2.
+
+## Bandwidth test latency
+
+The shared `app_bwtest` on upstream 2 exposes a UDP console on port 5100.
+Send `clr` to the receiver, then `test_send <offer_kbps> <duration_ms>` to
+the sender. Query receiver `stats` for `lat_samples`, `lat_invalid`, and
+`lat_last_us`, `lat_min_us`, `lat_avg_us`, `lat_max_us`. Values are one-way
+latency in microseconds since the last `clr`, alongside existing packet/byte/drop
+counters. Both boards can send or receive timestamped test traffic.
+
+Latency spans sender queue submission to receiver polling, including queueing,
+L3/FEC/radio transport, the 10 ms idle receive poll interval, and scheduling.
+Accurate readings require synchronized realtime clocks: ground is the krono
+reference and rover follows it. Legacy, malformed, zero or future timestamps
+count as `lat_invalid` and do not contribute to latency samples. Zero statistics
+with `lat_samples 0` mean no valid measurement.
+See [BW test details](https://github.com/winject-wireless/winject-l3/blob/main/docs/bwtest.md).
