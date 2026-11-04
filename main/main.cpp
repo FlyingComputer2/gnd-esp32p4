@@ -10,6 +10,7 @@
 #include <stdio.h>
 
 #include "WinjectL3.h"
+#include "winject_l3/Console.h"
 #include "apps/bwtest/Bwtest.h"
 #include "synch/SynchGpio.h"
 #include "esp_eth.h"
@@ -36,6 +37,7 @@
 #include <deque>
 #include <mutex>
 #include <sys/socket.h>
+#include <future>
 #include <thread>
 #include "utils/NetUtil.h"
 
@@ -44,7 +46,7 @@ namespace {
 constexpr const char *radio_tx_name = "ground-radio-tx";
 constexpr const char *radio_rx_name = "ground-radio-rx";
 constexpr const char *radio_reactor_name = "ground-radio";
-std::shared_ptr<winject::ReactiveLossyQueue> radio_tx, radio_rx;
+std::shared_ptr<winject::core::ReactiveLossyQueue> radio_tx, radio_rx;
 std::shared_ptr<bfc::cv_reactor<>> radio_reactor;
 void *run_radio_reactor(void *) { radio_reactor->run(); return nullptr; }
 void print_cpu() {
@@ -219,7 +221,7 @@ void register_usb_rc() {
 void run_rc_bridge(std::shared_ptr<winject::UpstreamQueue> up) {
     sockaddr_in addr{};
     const int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0 || !winject::parse_host_port(rc_udp_console, &addr) ||
+    if (fd < 0 || !winject::core::parse_host_port(rc_udp_console, &addr) ||
         bind(fd, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr)) != 0) {
         printf("GROUND_RC_BRIDGE cannot bind %s\n", rc_udp_console);
         return;
@@ -275,8 +277,8 @@ void start_rc_bridge(std::shared_ptr<winject::UpstreamQueue> up) {
 }
 
 void start_radio_queues() {
-    radio_tx = std::make_shared<winject::ReactiveLossyQueue>();
-    radio_rx = std::make_shared<winject::ReactiveLossyQueue>();
+    radio_tx = std::make_shared<winject::core::ReactiveLossyQueue>();
+    radio_rx = std::make_shared<winject::core::ReactiveLossyQueue>();
     radio_tx->set_capacity(256);
     radio_rx->set_capacity(256);
     radio_reactor = std::make_shared<bfc::cv_reactor<>>();
@@ -395,44 +397,44 @@ static void *l3_main(void *)
     cfg.radio_device.dplane_tx = radio_tx_name;
     cfg.radio_device.dplane_rx = radio_rx_name;
     cfg.radio_device.reactor = radio_reactor_name;
-    cfg.radio_device.fcs = winject::RadioFcsConfig::signal;
+    cfg.radio_device.fcs = winject::core::RadioFcsConfig::signal;
     // Reachable over Ethernet for lur/lut during tests; no authentication.
     cfg.console_in = "0.0.0.0:2400";
-    winject::UpstreamConfig synch;
+    winject::core::UpstreamConfig synch;
     synch.index = 0; // Rover upstream 0 with the buses swapped.
-    synch.mode = winject::UpstreamMode::queue;
+    synch.mode = winject::core::UpstreamMode::queue;
     synch.bus_tx = 0xa1;
     synch.bus_rx = 0xb2;
     synch.rx_queue_capacity = 16;
     synch.scheduler_budget = 256;
-    synch.fec_type = winject::FecType::none; // A lost exchange is a timeout.
+    synch.fec_type = winject::core::FecType::none; // A lost exchange is a timeout.
     cfg.upstreams.push_back(synch);
-    winject::UpstreamConfig video;
+    winject::core::UpstreamConfig video;
     video.index = 1; // USB ID is independently 0.
-    video.mode = winject::UpstreamMode::queue;
+    video.mode = winject::core::UpstreamMode::queue;
     video.bus_tx = 0xd4;
     video.bus_rx = 0xc3;
     video.rx_queue_capacity = 256;
     video.scheduler_budget = 4096;
-    video.fec_type = winject::FecType::none; // vstreamer FEC terminates at the P4 receiver.
+    video.fec_type = winject::core::FecType::none; // vstreamer FEC terminates at the P4 receiver.
     cfg.upstreams.push_back(video);
-    winject::UpstreamConfig bwtest;
+    winject::core::UpstreamConfig bwtest;
     bwtest.index = 2; // Rover upstream 2 with the buses swapped.
-    bwtest.mode = winject::UpstreamMode::queue;
+    bwtest.mode = winject::core::UpstreamMode::queue;
     bwtest.bus_tx = 0xe5;
     bwtest.bus_rx = 0xf6;
     bwtest.rx_queue_capacity = 256;
     bwtest.scheduler_budget = 4096;
-    bwtest.fec_type = winject::FecType::none; // Clean loss counts.
+    bwtest.fec_type = winject::core::FecType::none; // Clean loss counts.
     cfg.upstreams.push_back(bwtest);
-    winject::UpstreamConfig rover_rc;
+    winject::core::UpstreamConfig rover_rc;
     rover_rc.index = 3; // Rover upstream 3 (rover_sample) with the buses swapped.
-    rover_rc.mode = winject::UpstreamMode::queue;
+    rover_rc.mode = winject::core::UpstreamMode::queue;
     rover_rc.bus_tx = 0x28;
     rover_rc.bus_rx = 0x17;
     rover_rc.rx_queue_capacity = 16;
     rover_rc.scheduler_budget = 256;
-    rover_rc.fec_type = winject::FecType::none; // RC repeats at 50 Hz; FEC only adds latency.
+    rover_rc.fec_type = winject::core::FecType::none; // RC repeats at 50 Hz; FEC only adds latency.
     cfg.upstreams.push_back(rover_rc);
     cfg.on_upstream_queue = [](size_t index, std::shared_ptr<winject::UpstreamQueue> up)
     {
@@ -459,11 +461,66 @@ static void *l3_main(void *)
     // that reactor drains every upstream's RX queue. With the default pthread
     // config it ran at priority 5 under ground_radio (14), and at 10 Mbit/s
     // the video RX queue evicted ~10% of frames, which L3 counts as air gaps.
-    auto upstream_cfg = esp_pthread_get_default_config();
-    upstream_cfg.prio = 14;
-    upstream_cfg.thread_name = "l3_upstream";
-    ESP_ERROR_CHECK(esp_pthread_set_cfg(&upstream_cfg));
-    int rc = winject_l3::main(cfg);
+    // l3's UDP console: a reactor of its own, named for console::Service.
+    auto console_reactor = std::make_shared<winject::l3::console::Reactor>();
+    winject::l3::console::ReactorRegistry::get_instance().add("l3-console",
+                                                             console_reactor);
+    {
+        esp_pthread_cfg_t c = esp_pthread_get_default_config();
+        c.stack_size = 6 * 1024;
+        c.thread_name = "l3_console";
+        esp_pthread_set_cfg(&c);
+    }
+    // A stop() before run() set the reactor running would be lost, and the
+    // join below would never return: wait until it runs.
+    std::promise<void> console_running;
+    auto console_is_running = console_running.get_future();
+    console_reactor->wake_up(
+        [&console_running]()
+        {
+            console_running.set_value();
+        });
+    std::thread console_thread(
+        [console_reactor]()
+        {
+            console_reactor->run();
+        });
+    console_is_running.wait();
+    winject::l3::console::Service console;
+    auto started = [&](const winject::L3& l3)
+    {
+        if (!cfg.console_in.empty())
+        {
+            const winject::Status s =
+                console.start(l3, cfg.console_in, "l3-console");
+            if (!s.ok())
+            {
+                printf("L3_CONSOLE_FAILED %s\n", s.error.c_str());
+            }
+        }
+    };
+    int rc = winject::L3::run(
+        cfg, started,
+        [](winject::L3::Thread t)
+        {
+            auto c = esp_pthread_get_default_config();
+            if (t == winject::L3::Thread::upstream)
+            {
+                c.prio = 14;
+                c.thread_name = "l3_upstream";
+            }
+            else
+            {
+                // l3's reactor: as the ground_l3 task it replaced.
+                c.stack_size = 32768;
+                c.prio = 12;
+                c.thread_name = "l3_reactor";
+            }
+            ESP_ERROR_CHECK(esp_pthread_set_cfg(&c));
+        });
+    console.stop();
+    console_reactor->stop();
+    console_thread.join();
     printf("GROUND_L3_EXIT rc=%d\n", rc);
     return nullptr;
 }
