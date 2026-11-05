@@ -2,9 +2,12 @@
 // L3 upstreams: 0 clock sync (krono SynchServer, UDP console 5110), 1 video,
 // 2 bandwidth tester (app_bwtest, UDP console 5100), 3 rover_sample RC /
 // telemetry (bridged, see below), 4 rover L3 m-plane (UDP 2410), 5 rover C6
-// m-plane (UDP 2420), 6 rover vstreamer m-plane (UDP 5092). Buses as on the
-// rover, swapped: sync a1/b2, video d4/c3, tester e5/f6, rover_sample 28/17,
-// L3 m-plane a6/6a, C6 m-plane c7/7c, vstreamer m-plane d8/8d.
+// m-plane (UDP 2420), 6 rover vstreamer m-plane (UDP 5092), 7 rover tester
+// console (UDP 5102), 8 rover clock-sync console (UDP 5112); 7 and 8 take
+// several operators at once (mplane_relay). Buses as on the rover, swapped:
+// sync a1/b2, video d4/c3, tester e5/f6, rover_sample 28/17, L3 m-plane
+// a6/6a, C6 m-plane c7/7c, vstreamer m-plane d8/8d, tester console b4/4b,
+// sync console c5/5c.
 // USB IDs: 0 video, 1 MSP DisplayPort (TBA), 2 MSP RC telemetry (rover_sample),
 // 3 sync (krono synch requests from the Android app, answered against this
 // board's clock).
@@ -25,6 +28,7 @@
 #include "esp_netif_sntp.h"
 #include "esp_sntp.h"
 #include "esp_pthread.h"
+#include "mplane_relay.hpp"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
@@ -39,6 +43,7 @@
 #include <mutex>
 #include <sys/socket.h>
 #include <thread>
+#include <tuple>
 #include "utils/NetUtil.h"
 
 static const char *TAG = "rover_ground";
@@ -144,6 +149,42 @@ void start_synch(std::shared_ptr<winject::UpstreamQueue> up) {
         sc.edges = krono::start_gpio_edge_capture(synch_capture_gpio);
         sc.console = "0.0.0.0:5110";
         printf("GROUND_SYNCH_EXIT rc=%d\n", krono::server_main(sc));
+    }).detach();
+    if (had_prev) esp_pthread_set_cfg(&prev);
+}
+
+// Serves a rover console to operators on `listen` over its upstream's queue
+// (mplane_relay): each operator address gets a client id, so replies go back
+// to whoever asked, unlike the udp_server upstreams 4-6 (last sender only).
+// Low priority: a few datagrams per command.
+void start_mplane_relay(size_t index, std::shared_ptr<winject::UpstreamQueue> up,
+                        const char *name, const char *listen) {
+    static std::atomic<uint32_t> started{0};
+    const uint32_t bit = 1u << index;
+    if (started.fetch_or(bit) & bit) {
+        ESP_LOGW(TAG, "%s upstream replaced; restart to rebind the relay", name);
+        return;
+    }
+    esp_pthread_cfg_t prev {};
+    const bool had_prev = esp_pthread_get_cfg(&prev) == ESP_OK;
+    auto cfg = esp_pthread_get_default_config();
+    cfg.stack_size = 4 * 1024;
+    cfg.prio = 5;
+    cfg.thread_name = name;
+    cfg.inherit_cfg = false;
+    esp_pthread_set_cfg(&cfg);
+    std::thread([up = std::move(up), name, listen] {
+        mplane_relay::ServerConfig rc;
+        rc.send = [up](const uint8_t *data, size_t len) { return up->try_send(data, len); };
+        rc.receive = [up](std::vector<uint8_t> *out) {
+            auto packet = up->receive();
+            if (!packet) return false;
+            const auto *p = reinterpret_cast<const uint8_t *>(packet->data());
+            out->assign(p, p + packet->size());
+            return true;
+        };
+        rc.listen = listen;
+        printf("GROUND_RELAY_EXIT %s rc=%d\n", name, mplane_relay::server_main(rc));
     }).detach();
     if (had_prev) esp_pthread_set_cfg(&prev);
 }
@@ -478,6 +519,23 @@ static void *l3_main(void *)
     rover_video_mplane.scheduler_budget = 256;
     rover_video_mplane.fec_type = winject::FecType::none;
     cfg.upstreams.push_back(rover_video_mplane);
+    // Upstreams 7 and 8: the rover tester's (5100) and clock-sync client's
+    // (5110) consoles, served here on 5102 / 5112 since this board's own use
+    // 5100 / 5110. L3-owned queues relayed by mplane_relay, so several
+    // operators can use them at once. No authentication: bandwidth tests and
+    // the rover's sync mode are exposed over the air.
+    for (const auto &[index, bus_tx, bus_rx] :
+         {std::tuple<size_t, uint8_t, uint8_t>{7, 0xb4, 0x4b}, {8, 0xc5, 0x5c}}) {
+        winject::UpstreamConfig console;
+        console.index = index;
+        console.mode = winject::UpstreamMode::queue;
+        console.bus_tx = bus_tx;
+        console.bus_rx = bus_rx;
+        console.rx_queue_capacity = 16;
+        console.scheduler_budget = 256;
+        console.fec_type = winject::FecType::none;
+        cfg.upstreams.push_back(console);
+    }
     cfg.on_upstream_queue = [](size_t index, std::shared_ptr<winject::UpstreamQueue> up)
     {
         if (index == 0)
@@ -497,6 +555,14 @@ static void *l3_main(void *)
         else if (index == 3)
         {
             start_rc_bridge(std::move(up));
+        }
+        else if (index == 7)
+        {
+            start_mplane_relay(index, std::move(up), "bw_relay", "0.0.0.0:5102");
+        }
+        else if (index == 8)
+        {
+            start_mplane_relay(index, std::move(up), "synch_relay", "0.0.0.0:5112");
         }
     };
     // winject-l3 starts its upstream reactor with std::thread from this thread;
