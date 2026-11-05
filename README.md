@@ -36,7 +36,7 @@ idf.py -p /dev/ttyUSB0 flash monitor
 
 For an existing build, enable the new TinyUSB, socket-count and pthread-stack
 settings in `sdkconfig.defaults`, or regenerate `sdkconfig` from those defaults.
-The app retains the existing two OTA partitions and Ethernet HTTP OTA support.
+The app keeps two OTA partitions; this app and its C6 are updated over udp_ota (below), not HTTP.
 Normal C6 firmware is unchanged. Connect Android in USB host/OTG mode to the
 board's **High Speed USB (USB3)** port; use CH340 for flash and logs.
 
@@ -54,7 +54,7 @@ channel 1, OFDM_24M, 15 dBm. Upstreams (buses follow the flow, not the index):
 | 6 | Rover vstreamer m-plane: UDP server `0.0.0.0:5092`; the rover forwards it to its vstreamer on UDP 5090 | d8 / 8d | none |
 | 7 | Rover bandwidth tester console: UDP `0.0.0.0:5102` (mplane_relay, several operators at once) → rover UDP 5100 | b4 / 4b | none |
 | 8 | Rover clock-sync console: UDP `0.0.0.0:5112` (mplane_relay, several operators at once) → rover UDP 5110 | c5 / 5c | none |
-| 9 | Rover app update and config files (udp_ota): UDP `0.0.0.0:2430` (mplane_relay, several clients at once) → rover UDP 3232 (rov-esp32p4 `tools/udp_ota.py <ground>:2430 flash <app.bin> --reboot`, `fs-get` / `fs-put`) | e9 / 9e | none (the tool retransmits) |
+| 9 | Rover udp_ota (its app, its C6, config files): UDP `0.0.0.0:2430` (mplane_relay, several clients at once) → rover UDP 3232 (SDIO proxy `tools/udp_ota.py <ground>:2430 flash <app.bin> --reboot`, `flash-c6`, `fs-get` / `fs-put`) | e9 / 9e | none (the tool retransmits) |
 
 Upstream 3 carries the rover's rover_sample protocol, MSP v2 with one frame per datagram (wire, messages and
 the rover's console: rov-esp32p4 README, "RC car"). This board does not parse it. Frames from USB channel 2
@@ -134,7 +134,7 @@ ground P4, for example `echo "get sys stats" | nc -u -w1 <ground> 5092`.
 published its video transport. `GROUND_USB channel=...` reports local counters.
 `GROUND_L3_EXIT` indicates the manager stopped; reconnect/reset after recovery.
 The current boot does not automatically restart the manager. Backend failure
-invalidates an open USB session; HTTP OTA stays available over Ethernet.
+invalidates an open USB session; udp_ota stays available over Ethernet.
 
 Host tests cover P4 FEC recovery and feedback over UDP and direct queues, ordered retry after Ethernet TX backpressure, identical RTP output on both
 branches, queue isolation, and Android fragmented IDR reconstruction. Hardware USB
@@ -168,9 +168,20 @@ The test covers matching Android/C++ golden wire bytes, split records, high u16
 IDs, channel 0 routing, duplicate bindings, independent credits, reset recovery
 and invalid traffic. A PyUSB bench client is in `tools/usb-radio/smoke.py`.
 
+## Updating this board (udp_ota)
+
+The SDIO proxy's udp_ota ([winject-radio-esp32-sdio-proxy](https://github.com/winject-wireless/winject-radio-esp32-sdio-proxy) `components/udp_ota`, client `tools/udp_ota.py`) serves UDP 3232 on this board's Ethernet; there is no HTTP server and no authentication. The same tool reaches the rover through UDP 2430 (upstream 9).
+
+```sh
+P=<proxy checkout>/tools/udp_ota.py
+$P <ground IP>:3232 flash build/gnd-esp32p4.bin --reboot   # this app; kept once reached over the network
+$P <ground IP>:3232 flash-c6 winject-esp32c6.bin           # this board's C6, staged on the P4, written over SDIO
+$P <ground IP>:3232 status | reboot | c6-reset | c6-download
+```
+
 ## First C6 flash (stock ESP-Hosted → winject)
 
-`/update/c6` goes over the winject SDIO link, so a C6 still running Guition's ESP-Hosted slave has to be flashed over its UART once. [`tools/c6-uart-bridge`](tools/c6-uart-bridge) is a P4 image that holds the C6 in its ROM downloader and bridges the CH340 port (UART0) to the C6's UART0 at 115200.
+`flash-c6` goes over the winject SDIO link, so a C6 still running Guition's ESP-Hosted slave has to be flashed over its UART once. [`tools/c6-uart-bridge`](tools/c6-uart-bridge) is a P4 image that holds the C6 in its ROM downloader and bridges the CH340 port (UART0) to the C6's UART0 at 115200.
 
 Jumpers on JP1: **GPIO32 → pin 20 (C6 U0RXD)**, **GPIO33 → pin 22 (C6 U0TXD)**, **GPIO45 → pin 24 (C6 IO9)**.
 
