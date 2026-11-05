@@ -54,6 +54,7 @@ channel 1, OFDM_24M, 15 dBm. Upstreams (buses follow the flow, not the index):
 | 6 | Rover vstreamer m-plane: UDP server `0.0.0.0:5092`; the rover forwards it to its vstreamer on UDP 5090 | d8 / 8d | none |
 | 7 | Rover bandwidth tester console: UDP `0.0.0.0:5102` (mplane_relay, several operators at once) → rover UDP 5100 | b4 / 4b | none |
 | 8 | Rover clock-sync console: UDP `0.0.0.0:5112` (mplane_relay, several operators at once) → rover UDP 5110 | c5 / 5c | none |
+| 9 | Rover app update (udp_ota): UDP server `0.0.0.0:2430`; the rover forwards it to udp_ota on UDP 3232 (rov-esp32p4 `tools/udp_ota.py <ground>:2430 flash <app.bin> --reboot`) | e9 / 9e | none (the tool retransmits) |
 
 Upstream 3 carries the rover's rover_sample protocol, MSP v2 with one frame per datagram (wire, messages and
 the rover's console: rov-esp32p4 README, "RC car"). This board does not parse it. Frames from USB channel 2
@@ -90,6 +91,9 @@ every reply returns to whoever asked. Replies over 1444 bytes are dropped. Both 
 echo stats  | nc -u -w1 <ground> 5102   # rover tester counters
 echo status | nc -u -w1 <ground> 5112   # rover sync client status
 ```
+
+UDP 2430 reaches the rover's app update server over upstream 9; it is unauthenticated and can replace and
+reboot the rover's app.
 
 L3 creates the `UpstreamQueue` for the video upstream (no queue names in its
 config) and hands it over through `Config::on_upstream_queue`. The video service
