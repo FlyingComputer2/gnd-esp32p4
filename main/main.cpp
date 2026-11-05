@@ -4,8 +4,8 @@
 // telemetry (bridged, see below), 4 rover L3 m-plane (UDP 2410), 5 rover C6
 // m-plane (UDP 2420), 6 rover vstreamer m-plane (UDP 5092), 7 rover tester
 // console (UDP 5102), 8 rover clock-sync console (UDP 5112); 7 and 8 take
-// several operators at once (mplane_relay); 9 rover app update (udp_ota,
-// UDP 2430). Buses as on the rover, swapped:
+// several operators at once (mplane_relay); 9 rover app update and config
+// files (udp_ota, UDP 2430), relayed the same way. Buses as on the rover, swapped:
 // sync a1/b2, video d4/c3, tester e5/f6, rover_sample 28/17, L3 m-plane
 // a6/6a, C6 m-plane c7/7c, vstreamer m-plane d8/8d, tester console b4/4b,
 // sync console c5/5c, udp_ota e9/9e.
@@ -537,15 +537,15 @@ static void *l3_main(void *)
         console.fec_type = winject::FecType::none;
         cfg.upstreams.push_back(console);
     }
-    // Upstream 9: the rover's app update server (udp_ota, UDP 3232 on the
-    // rover). Run rov-esp32p4 tools/udp_ota.py against this board's UDP 2430.
-    // Replies go to the last sender, so one client at a time over the air.
-    // No FEC: the tool retransmits. There is no authentication: anyone
-    // reaching this port can replace and reboot the rover's app.
+    // Upstream 9: the rover's udp_ota (app update and config files, UDP 3232
+    // on the rover). Run rov-esp32p4 tools/udp_ota.py against this board's
+    // UDP 2430. An L3-owned queue relayed by mplane_relay like 7 and 8, so
+    // several clients can use it at once. No FEC: the tool retransmits. There
+    // is no authentication: anyone reaching this port can replace and reboot
+    // the rover's app and rewrite its config.
     winject::UpstreamConfig rover_ota;
     rover_ota.index = 9;
-    rover_ota.mode = winject::UpstreamMode::udp_server;
-    rover_ota.endpoint.rx = "0.0.0.0:2430";
+    rover_ota.mode = winject::UpstreamMode::queue;
     rover_ota.bus_tx = 0xe9;
     rover_ota.bus_rx = 0x9e;
     rover_ota.rx_queue_capacity = 64;
@@ -579,6 +579,10 @@ static void *l3_main(void *)
         else if (index == 8)
         {
             start_mplane_relay(index, std::move(up), "synch_relay", "0.0.0.0:5112");
+        }
+        else if (index == 9)
+        {
+            start_mplane_relay(index, std::move(up), "ota_relay", "0.0.0.0:2430");
         }
     };
     // winject-l3 starts its upstream reactor with std::thread from this thread;
