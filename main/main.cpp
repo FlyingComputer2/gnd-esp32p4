@@ -434,6 +434,20 @@ static void *l3_main(void *)
     rover_rc.scheduler_budget = 256;
     rover_rc.fec_type = winject::FecType::none; // RC repeats at 50 Hz; FEC only adds latency.
     cfg.upstreams.push_back(rover_rc);
+    // Upstream 4: the rover's L3 m-plane. UDP server mode: an operator sends
+    // console requests to 2410 and gets the rover's replies back on the same
+    // socket. Replies go to the last sender, so one operator at a time.
+    // Buses are the rover's (tx 6a / rx a6) with the ends swapped.
+    winject::UpstreamConfig rover_mplane;
+    rover_mplane.index = 4;
+    rover_mplane.mode = winject::UpstreamMode::udp_server;
+    rover_mplane.endpoint.rx = "0.0.0.0:2410";
+    rover_mplane.bus_tx = 0xa6;
+    rover_mplane.bus_rx = 0x6a;
+    rover_mplane.rx_queue_capacity = 16;
+    rover_mplane.scheduler_budget = 256;
+    rover_mplane.fec_type = winject::FecType::none;
+    cfg.upstreams.push_back(rover_mplane);
     cfg.on_upstream_queue = [](size_t index, std::shared_ptr<winject::UpstreamQueue> up)
     {
         if (index == 0)

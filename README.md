@@ -49,6 +49,7 @@ channel 1, OFDM_24M, 15 dBm. Upstreams (buses follow the flow, not the index):
 | 1 | Video | d4 / c3 | none (vstreamer's own) |
 | 2 | Bandwidth tester, app_bwtest, UDP console 5100 (`test_send <offer_kbps> <duration_ms>`, `stats`, `clr`) | e5 / f6 | none |
 | 3 | RC car (rover_sample): RC up, telemetry down; bridged to USB channel 2 and UDP 5120 | 28 / 17 | none (RC repeats every 20 ms) |
+| 4 | Rover L3 m-plane: UDP server `0.0.0.0:2410`, replies go to the last sender (one operator at a time); replies over ~1445 B are dropped | a6 / 6a | none |
 
 Upstream 3 carries the rover's rover_sample protocol, MSP v2 with one frame per datagram (wire, messages and
 the rover's console: rov-esp32p4 README, "RC car"). This board does not parse it. Frames from USB channel 2
