@@ -72,6 +72,8 @@ These must match the rover (with buses swapped). Video has no manager-level FEC;
 vstreamer's FEC terminates at the ground P4; P4 returns receiver feedback. The manager console is bound to
 0.0.0.0:2400 (no authentication; Ethernet is an internal link). UDP 2420 reaches the rover C6 radio m-plane over
 upstream 5. It is also unauthenticated and can change the rover radio's channel, power and modulation or reset it.
+UDP 5092 reaches the rover vstreamer m-plane over upstream 6; it is unauthenticated and can reconfigure the rover
+video source, payloader and sender. The ground's own receiver m-plane remains on UDP 5090.
 
 L3 creates the `UpstreamQueue` for the video upstream (no queue names in its
 config) and hands it over through `Config::on_upstream_queue`. The video service
@@ -100,6 +102,9 @@ echo "get gnd tasks"           | nc -u -w1 <ground> 5090   # CPU % of one core p
 echo "get usb latency_stats"   | nc -u -w1 <ground> 5090   # camera -> the USB service takes the packet from the fanout
 echo "get usb prof"            | nc -u -w1 <ground> 5090   # USB service-loop time per section and counters since the last query
 ```
+
+The rover's vstreamer m-plane uses the same grammar through UDP 5092 on the
+ground P4, for example `echo "get sys stats" | nc -u -w1 <ground> 5092`.
 
 `latency_stats` covers the AUs since the previous query; `get rcv latency_ms` and
 `get rcv node_latency_ms` give the last AU. Other `get|set rcv <key>` go to

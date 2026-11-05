@@ -2,8 +2,9 @@
 // L3 upstreams: 0 clock sync (krono SynchServer, UDP console 5110), 1 video,
 // 2 bandwidth tester (app_bwtest, UDP console 5100), 3 rover_sample RC /
 // telemetry (bridged, see below), 4 rover L3 m-plane (UDP 2410), 5 rover C6
-// m-plane (UDP 2420). Buses as on the rover, swapped: sync a1/b2, video d4/c3,
-// tester e5/f6, rover_sample 28/17, L3 m-plane a6/6a, C6 m-plane c7/7c.
+// m-plane (UDP 2420), 6 rover vstreamer m-plane (UDP 5092). Buses as on the
+// rover, swapped: sync a1/b2, video d4/c3, tester e5/f6, rover_sample 28/17,
+// L3 m-plane a6/6a, C6 m-plane c7/7c, vstreamer m-plane d8/8d.
 // USB IDs: 0 video, 1 MSP DisplayPort (TBA), 2 MSP RC telemetry (rover_sample),
 // 3 sync (krono synch requests from the Android app, answered against this
 // board's clock).
@@ -463,6 +464,20 @@ static void *l3_main(void *)
     rover_radio_mplane.scheduler_budget = 256;
     rover_radio_mplane.fec_type = winject::FecType::none;
     cfg.upstreams.push_back(rover_radio_mplane);
+    // Upstream 6: the rover vstreamer m-plane. This board's receiver m-plane
+    // already owns UDP 5090, so an operator uses 5092 for the rover. The
+    // rover's static UDP upstream forwards requests to its local port 5090.
+    // There is no authentication; video settings are exposed over the air.
+    winject::UpstreamConfig rover_video_mplane;
+    rover_video_mplane.index = 6;
+    rover_video_mplane.mode = winject::UpstreamMode::udp_server;
+    rover_video_mplane.endpoint.rx = "0.0.0.0:5092";
+    rover_video_mplane.bus_tx = 0xd8;
+    rover_video_mplane.bus_rx = 0x8d;
+    rover_video_mplane.rx_queue_capacity = 16;
+    rover_video_mplane.scheduler_budget = 256;
+    rover_video_mplane.fec_type = winject::FecType::none;
+    cfg.upstreams.push_back(rover_video_mplane);
     cfg.on_upstream_queue = [](size_t index, std::shared_ptr<winject::UpstreamQueue> up)
     {
         if (index == 0)
