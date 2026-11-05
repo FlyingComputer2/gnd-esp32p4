@@ -50,6 +50,7 @@ channel 1, OFDM_24M, 15 dBm. Upstreams (buses follow the flow, not the index):
 | 2 | Bandwidth tester, app_bwtest, UDP console 5100 (`test_send <offer_kbps> <duration_ms>`, `stats`, `clr`) | e5 / f6 | none |
 | 3 | RC car (rover_sample): RC up, telemetry down; bridged to USB channel 2 and UDP 5120 | 28 / 17 | none (RC repeats every 20 ms) |
 | 4 | Rover L3 m-plane: UDP server `0.0.0.0:2410`, replies go to the last sender (one operator at a time); replies over ~1445 B are dropped | a6 / 6a | none |
+| 5 | Rover C6 radio m-plane: UDP server `0.0.0.0:2420`; the rover forwards it to its proxy on UDP 22 | c7 / 7c | none |
 
 Upstream 3 carries the rover's rover_sample protocol, MSP v2 with one frame per datagram (wire, messages and
 the rover's console: rov-esp32p4 README, "RC car"). This board does not parse it. Frames from USB channel 2
@@ -69,8 +70,8 @@ with the internal pull-up and a falling-edge interrupt. Console `status` on UDP 
 `docs/synch.md`, usage in the rov-esp32p4 README.
 These must match the rover (with buses swapped). Video has no manager-level FEC;
 vstreamer's FEC terminates at the ground P4; P4 returns receiver feedback. The manager console is bound to
-0.0.0.0:2400 (no authentication; Ethernet is an internal link). Do not run a second Ethernet L3 manager against this radio:
-the underlying radio proxy has a single peer per plane.
+0.0.0.0:2400 (no authentication; Ethernet is an internal link). UDP 2420 reaches the rover C6 radio m-plane over
+upstream 5. It is also unauthenticated and can change the rover radio's channel, power and modulation or reset it.
 
 L3 creates the `UpstreamQueue` for the video upstream (no queue names in its
 config) and hands it over through `Config::on_upstream_queue`. The video service
