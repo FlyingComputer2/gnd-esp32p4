@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and run the portable USB service against the actual L3 queue handle."""
+"""Build and run the portable USB service against the actual L3 queue handle, and the m-plane relay."""
 import argparse
 import os
 from pathlib import Path
@@ -28,3 +28,8 @@ with tempfile.TemporaryDirectory(prefix='rover-usb-test-') as directory:
     subprocess.run(command, check=True)
     env = dict(os.environ, ASAN_OPTIONS='detect_leaks=0')
     subprocess.run([str(work / 'test')], check=True, env=env)
+    relay = root / 'components/mplane_relay'
+    subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror', *flags, '-I', str(relay / 'include'),
+                    str(root / 'tests/mplane_relay_test.cpp'), str(relay / 'mplane_relay.cpp'), '-pthread',
+                    '-o', str(work / 'relay_test')], check=True)
+    subprocess.run([str(work / 'relay_test')], check=True, env=env)
