@@ -1,8 +1,9 @@
 // Guition ground radio: Ethernet/OTA, C6 SDIO proxy, L3 and USB.
 // L3 upstreams: 0 clock sync (krono SynchServer, UDP console 5110), 1 video,
 // 2 bandwidth tester (app_bwtest, UDP console 5100), 3 rover_sample RC /
-// telemetry (bridged, see below). Buses as on the rover, swapped: sync a1/b2,
-// video d4/c3, tester e5/f6, rover_sample 28/17.
+// telemetry (bridged, see below), 4 rover L3 m-plane (UDP 2410), 5 rover C6
+// m-plane (UDP 2420). Buses as on the rover, swapped: sync a1/b2, video d4/c3,
+// tester e5/f6, rover_sample 28/17, L3 m-plane a6/6a, C6 m-plane c7/7c.
 // USB IDs: 0 video, 1 MSP DisplayPort (TBA), 2 MSP RC telemetry (rover_sample),
 // 3 sync (krono synch requests from the Android app, answered against this
 // board's clock).
@@ -448,6 +449,20 @@ static void *l3_main(void *)
     rover_mplane.scheduler_budget = 256;
     rover_mplane.fec_type = winject::FecType::none;
     cfg.upstreams.push_back(rover_mplane);
+    // Upstream 5: the rover C6 radio m-plane. The rover's static UDP upstream
+    // forwards this to its local proxy on port 22. That proxy routes replies
+    // per request tag, so the rover's local L3 can use port 22 at the same
+    // time. There is no authentication; radio control and reset are exposed.
+    winject::UpstreamConfig rover_radio_mplane;
+    rover_radio_mplane.index = 5;
+    rover_radio_mplane.mode = winject::UpstreamMode::udp_server;
+    rover_radio_mplane.endpoint.rx = "0.0.0.0:2420";
+    rover_radio_mplane.bus_tx = 0xc7;
+    rover_radio_mplane.bus_rx = 0x7c;
+    rover_radio_mplane.rx_queue_capacity = 16;
+    rover_radio_mplane.scheduler_budget = 256;
+    rover_radio_mplane.fec_type = winject::FecType::none;
+    cfg.upstreams.push_back(rover_radio_mplane);
     cfg.on_upstream_queue = [](size_t index, std::shared_ptr<winject::UpstreamQueue> up)
     {
         if (index == 0)

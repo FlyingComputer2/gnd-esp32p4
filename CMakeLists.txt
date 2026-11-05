@@ -19,7 +19,7 @@ include(${winject_l3_SOURCE_DIR}/src/BfcFetch.cmake)
 
 FetchContent_Declare(winject_sdio_proxy
     GIT_REPOSITORY https://github.com/winject-wireless/winject-radio-esp32-sdio-proxy.git
-    GIT_TAG 0dc783a1b0fd1aadd9c88620af47dde5e8150630
+    GIT_TAG 1e74ea9866e365441188fdebfc43047566598291
 )
 FetchContent_GetProperties(winject_sdio_proxy)
 if(NOT winject_sdio_proxy_POPULATED)
