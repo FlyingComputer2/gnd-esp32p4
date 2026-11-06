@@ -1,25 +1,19 @@
 #include "mplane_relay.hpp"
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
-#include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <utility>
 
 namespace mplane_relay
 {
 namespace
 {
-
-int64_t now_ms()
-{
-    using namespace std::chrono;
-    return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
-}
 
 bool parse_host_port(const std::string& s, sockaddr_in* out)
 {
@@ -28,7 +22,6 @@ bool parse_host_port(const std::string& s, sockaddr_in* out)
     {
         return false;
     }
-    const std::string host = s.substr(0, colon);
     char* end = nullptr;
     const long port = std::strtol(s.c_str() + colon + 1, &end, 10);
     if (*end != '\0' || port <= 0 || port > 65535)
@@ -38,150 +31,154 @@ bool parse_host_port(const std::string& s, sockaddr_in* out)
     std::memset(out, 0, sizeof(*out));
     out->sin_family = AF_INET;
     out->sin_port = htons(static_cast<uint16_t>(port));
-    return inet_pton(AF_INET, host.c_str(), &out->sin_addr) == 1;
+    return inet_pton(AF_INET, s.substr(0, colon).c_str(), &out->sin_addr) == 1;
 }
 
-bool same_addr(const sockaddr_in& a, const sockaddr_in& b)
+bool same_addr(const std::vector<uint8_t>& bytes, const sockaddr_in& addr)
 {
-    return a.sin_addr.s_addr == b.sin_addr.s_addr && a.sin_port == b.sin_port;
+    if (bytes.size() != sizeof(addr))
+    {
+        return false;
+    }
+    sockaddr_in saved {};
+    std::memcpy(&saved, bytes.data(), sizeof(saved));
+    return saved.sin_addr.s_addr == addr.sin_addr.s_addr && saved.sin_port == addr.sin_port;
 }
-
-struct Client
-{
-    bool live = false;
-    uint8_t id = 0;
-    sockaddr_in addr {};
-    int64_t last_ms = 0;
-};
 
 }  // namespace
 
-int server_main(const ServerConfig& cfg)
+Server::Server(ServerConfig cfg, Hooks hooks)
+    : cfg_(std::move(cfg)), hooks_(std::move(hooks))
 {
     sockaddr_in bind_addr {};
-    if (!cfg.send || !cfg.receive || cfg.max_clients == 0 || cfg.max_clients > 255 ||
-        cfg.max_datagram < 2 || !parse_host_port(cfg.listen, &bind_addr))
+    if (!hooks_.send_air || !hooks_.now_ms || cfg_.max_clients == 0 || cfg_.max_clients > 255 ||
+        cfg_.max_datagram < 2 || !parse_host_port(cfg_.listen, &bind_addr))
     {
-        return 1;
+        return;
     }
-    const int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0)
+    fd_ = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd_ < 0 || bind(fd_, reinterpret_cast<const sockaddr*>(&bind_addr), sizeof(bind_addr)) != 0)
     {
-        return 1;
+        if (fd_ >= 0)
+        {
+            close(fd_);
+        }
+        fd_ = -1;
+        return;
     }
-    if (bind(fd, reinterpret_cast<const sockaddr*>(&bind_addr), sizeof(bind_addr)) != 0)
-    {
-        close(fd);
-        return 1;
-    }
-    std::vector<Client> clients(cfg.max_clients);
-    // Ids roll over 0..255 so a reused slot gets a fresh id: a late reply for
-    // a forgotten operator then finds no one instead of the newcomer.
-    uint8_t next_id = 0;
-    std::vector<uint8_t> air;
-    std::vector<uint8_t> buf(cfg.max_datagram + 1);
-    Stats st;
+    fcntl(fd_, F_SETFL, fcntl(fd_, F_GETFL, 0) | O_NONBLOCK);
+    clients_.resize(cfg_.max_clients);
+    buf_.resize(cfg_.max_datagram + 1);
+}
 
-    auto client_for = [&](const sockaddr_in& from, int64_t now) -> Client*
+Server::~Server()
+{
+    if (fd_ >= 0)
     {
-        Client* lru = nullptr;
-        for (auto& c : clients)
-        {
-            if (c.live && same_addr(c.addr, from))
-            {
-                return &c;
-            }
-            if (!lru || !c.live || (lru->live && c.last_ms < lru->last_ms))
-            {
-                lru = &c;
-            }
-        }
-        if (lru->live)
-        {
-            ++st.evicted;
-        }
-        lru->live = true;
-        lru->addr = from;
-        lru->id = next_id++;
-        lru->last_ms = now;
-        return lru;
-    };
+        close(fd_);
+    }
+}
 
-    while (!cfg.stop || !cfg.stop->load())
+Server::Client* Server::client_for(const void* address, int64_t now)
+{
+    const auto& from = *static_cast<const sockaddr_in*>(address);
+    Client* lru = nullptr;
+    for (auto& client : clients_)
     {
-        const int64_t now = now_ms();
-        for (auto& c : clients)
+        if (client.live && same_addr(client.addr, from))
         {
-            if (c.live && now - c.last_ms > cfg.idle_ms)
-            {
-                c.live = false;
-            }
+            return &client;
         }
-        fd_set rd;
-        FD_ZERO(&rd);
-        FD_SET(fd, &rd);
-        timeval tv {0, cfg.poll_ms * 1000};
-        if (select(fd + 1, &rd, nullptr, nullptr, &tv) > 0)
+        if (!lru || !client.live || (lru->live && client.last_ms < lru->last_ms))
         {
-            sockaddr_in from {};
-            socklen_t len = sizeof(from);
-            const ssize_t n = recvfrom(fd, buf.data() + 1, cfg.max_datagram, 0,
-                                       reinterpret_cast<sockaddr*>(&from), &len);
-            if (n > 0 && static_cast<size_t>(n) > cfg.max_datagram - 1)
-            {
-                ++st.too_big;
-            }
-            else if (n > 0)
-            {
-                Client* c = client_for(from, now);
-                c->last_ms = now;
-                buf[0] = c->id;
-                if (cfg.send(buf.data(), static_cast<size_t>(n) + 1))
-                {
-                    ++st.requests;
-                }
-                else
-                {
-                    ++st.send_fail;
-                }
-            }
-        }
-        while (cfg.receive(&air))
-        {
-            if (air.size() < 2)
-            {
-                ++st.bad;
-                continue;
-            }
-            const Client* owner = nullptr;
-            for (const auto& c : clients)
-            {
-                if (c.live && c.id == air[0])
-                {
-                    owner = &c;
-                    break;
-                }
-            }
-            if (!owner)
-            {
-                ++st.no_client;
-                continue;
-            }
-            if (sendto(fd, air.data() + 1, air.size() - 1, 0,
-                       reinterpret_cast<const sockaddr*>(&owner->addr), sizeof(owner->addr)) < 0)
-            {
-                ++st.send_fail;
-                continue;
-            }
-            ++st.replies;
-        }
-        if (cfg.on_stats)
-        {
-            cfg.on_stats(st);
+            lru = &client;
         }
     }
-    close(fd);
-    return 0;
+    if (lru->live)
+    {
+        ++stats_.evicted;
+    }
+    lru->live = true;
+    lru->addr.assign(reinterpret_cast<const uint8_t*>(&from),
+                     reinterpret_cast<const uint8_t*>(&from) + sizeof(from));
+    lru->id = next_id_++;
+    lru->last_ms = now;
+    return lru;
+}
+
+void Server::on_readable()
+{
+    for (;;)
+    {
+        sockaddr_in from {};
+        socklen_t len = sizeof(from);
+        const ssize_t n = recvfrom(fd_, buf_.data() + 1, cfg_.max_datagram, MSG_DONTWAIT,
+                                   reinterpret_cast<sockaddr*>(&from), &len);
+        if (n <= 0)
+        {
+            return;
+        }
+        if (static_cast<size_t>(n) > cfg_.max_datagram - 1)
+        {
+            ++stats_.too_big;
+            continue;
+        }
+        const int64_t now = hooks_.now_ms();
+        Client* client = client_for(&from, now);
+        client->last_ms = now;
+        buf_[0] = client->id;
+        if (hooks_.send_air(buf_.data(), static_cast<size_t>(n) + 1))
+        {
+            ++stats_.requests;
+        }
+        else
+        {
+            ++stats_.send_fail;
+        }
+    }
+}
+
+void Server::on_air(const uint8_t* data, size_t len)
+{
+    if (len < 2)
+    {
+        ++stats_.bad;
+        return;
+    }
+    const Client* owner = nullptr;
+    for (const auto& client : clients_)
+    {
+        if (client.live && client.id == data[0])
+        {
+            owner = &client;
+            break;
+        }
+    }
+    if (!owner)
+    {
+        ++stats_.no_client;
+        return;
+    }
+    sockaddr_in addr {};
+    std::memcpy(&addr, owner->addr.data(), sizeof(addr));
+    if (sendto(fd_, data + 1, len - 1, 0, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) < 0)
+    {
+        ++stats_.send_fail;
+        return;
+    }
+    ++stats_.replies;
+}
+
+void Server::tick()
+{
+    const int64_t now = hooks_.now_ms();
+    for (auto& client : clients_)
+    {
+        if (client.live && now - client.last_ms > cfg_.idle_ms)
+        {
+            client.live = false;
+        }
+    }
 }
 
 }  // namespace mplane_relay

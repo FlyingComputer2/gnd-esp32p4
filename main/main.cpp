@@ -16,7 +16,6 @@
 #include <stdio.h>
 
 #include "WinjectL3.h"
-#include "apps/bwtest/Bwtest.h"
 #include "synch/SynchGpio.h"
 #include "esp_eth.h"
 #include "esp_heap_caps.h"
@@ -29,7 +28,9 @@
 #include "esp_netif_sntp.h"
 #include "esp_sntp.h"
 #include "esp_pthread.h"
-#include "mplane_relay.hpp"
+#include "app_kit.hpp"
+#include "applets.hpp"
+#include "mplane_relay_applet.hpp"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
@@ -41,6 +42,7 @@
 #include <bfc/cv_reactor.hpp>
 #include <atomic>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <sys/socket.h>
 #include <thread>
@@ -49,6 +51,8 @@
 
 static const char *TAG = "rover_ground";
 namespace {
+constexpr app_kit::thread_spec apps_thread {"apps", 6 * 1024, 12, -1,
+                                             app_kit::stack_in::psram, false};
 constexpr const char *radio_tx_name = "ground-radio-tx";
 constexpr const char *radio_rx_name = "ground-radio-rx";
 constexpr const char *radio_reactor_name = "ground-radio";
@@ -86,8 +90,8 @@ void print_cpu() {
     printf("GROUND_CPU%s\n", line.c_str());
 }
 
-// Runs app_bwtest on its upstream's queue. Its sender and receive poller
-// inherit this thread's settings: low priority, unpinned, so video wins.
+// The tester's console and receive side run on the app reactor. Only an
+// active sender gets a transient low-priority thread.
 void start_bwtest(std::shared_ptr<winject::UpstreamQueue> up) {
     static bool started = false;
     if (started) {
@@ -95,21 +99,10 @@ void start_bwtest(std::shared_ptr<winject::UpstreamQueue> up) {
         return;
     }
     started = true;
-    esp_pthread_cfg_t prev {};
-    const bool had_prev = esp_pthread_get_cfg(&prev) == ESP_OK;
-    auto cfg = esp_pthread_get_default_config();
-    cfg.stack_size = 6 * 1024;
-    cfg.prio = 5;
-    cfg.thread_name = "bwtest";
-    cfg.inherit_cfg = true;
-    esp_pthread_set_cfg(&cfg);
-    std::thread([up = std::move(up)] {
-        app_bwtest::Config bw;
-        bw.upstream = up;
-        bw.console = "0.0.0.0:5100";
-        printf("GROUND_BWTEST_EXIT rc=%d\n", app_bwtest::main(bw));
-    }).detach();
-    if (had_prev) esp_pthread_set_cfg(&prev);
+    static applets::BwtestApplet applet;
+    applets::bwtest_config cfg;
+    if (!applet.configure(std::move(up), cfg) || !applet.start())
+        printf("GROUND_BWTEST_EXIT rc=1\n");
 }
 
 // krono's datagram transport over an L3-owned upstream queue.
@@ -125,7 +118,7 @@ krono::Transport synch_transport(std::shared_ptr<winject::UpstreamQueue> up) {
         }};
 }
 
-// Runs the clock-sync server, the reference clock, on its upstream's queue.
+// Runs the clock-sync server, the reference clock, on the app reactor.
 // The rover's sync pulse arrives on GPIO20 (JP1 pin 17): active low, Hi-Z at
 // rest, pulled up here. Priority 12 so replies are stamped promptly.
 constexpr int synch_capture_gpio = 20;
@@ -136,58 +129,44 @@ void start_synch(std::shared_ptr<winject::UpstreamQueue> up) {
         return;
     }
     started = true;
-    esp_pthread_cfg_t prev {};
-    const bool had_prev = esp_pthread_get_cfg(&prev) == ESP_OK;
-    auto cfg = esp_pthread_get_default_config();
-    cfg.stack_size = 6 * 1024;
-    cfg.prio = 12;
-    cfg.thread_name = "synch";
-    cfg.inherit_cfg = true;
-    esp_pthread_set_cfg(&cfg);
-    std::thread([up = std::move(up)] {
-        krono::ServerConfig sc;
-        sc.transport = synch_transport(up);
-        sc.edges = krono::start_gpio_edge_capture(synch_capture_gpio);
-        sc.console = "0.0.0.0:5110";
-        printf("GROUND_SYNCH_EXIT rc=%d\n", krono::server_main(sc));
-    }).detach();
-    if (had_prev) esp_pthread_set_cfg(&prev);
+    static applets::SynchServerApplet applet;
+    applets::synch_server_config cfg;
+    cfg.edges = krono::start_gpio_edge_capture(synch_capture_gpio);
+    if (!applet.configure(synch_transport(std::move(up)), cfg) || !applet.start())
+        printf("GROUND_SYNCH_EXIT rc=1\n");
 }
 
 // Serves a rover console to operators on `listen` over its upstream's queue
 // (mplane_relay): each operator address gets a client id, so replies go back
 // to whoever asked, unlike the udp_server upstreams 4-6 (last sender only).
-// Low priority: a few datagrams per command.
+// A few datagrams per command, served on the app reactor.
 void start_mplane_relay(size_t index, std::shared_ptr<winject::UpstreamQueue> up,
                         const char *name, const char *listen) {
     static std::atomic<uint32_t> started{0};
+    static std::unique_ptr<mplane_relay::Applet> applets[32];
     const uint32_t bit = 1u << index;
     if (started.fetch_or(bit) & bit) {
         ESP_LOGW(TAG, "%s upstream replaced; restart to rebind the relay", name);
         return;
     }
-    esp_pthread_cfg_t prev {};
-    const bool had_prev = esp_pthread_get_cfg(&prev) == ESP_OK;
-    auto cfg = esp_pthread_get_default_config();
-    cfg.stack_size = 4 * 1024;
-    cfg.prio = 5;
-    cfg.thread_name = name;
-    cfg.inherit_cfg = false;
-    esp_pthread_set_cfg(&cfg);
-    std::thread([up = std::move(up), name, listen] {
-        mplane_relay::ServerConfig rc;
-        rc.send = [up](const uint8_t *data, size_t len) { return up->try_send(data, len); };
-        rc.receive = [up](std::vector<uint8_t> *out) {
+    mplane_relay::AppletConfig cfg;
+    cfg.name = name;
+    cfg.relay.listen = listen;
+    mplane_relay::Transport transport;
+    transport.send = [up](const uint8_t *data, size_t len) { return up->try_send(data, len); };
+    transport.receive = [up](std::vector<uint8_t> *out) {
             auto packet = up->receive();
             if (!packet) return false;
             const auto *p = reinterpret_cast<const uint8_t *>(packet->data());
             out->assign(p, p + packet->size());
             return true;
         };
-        rc.listen = listen;
-        printf("GROUND_RELAY_EXIT %s rc=%d\n", name, mplane_relay::server_main(rc));
-    }).detach();
-    if (had_prev) esp_pthread_set_cfg(&prev);
+    auto applet = std::make_unique<mplane_relay::Applet>();
+    if (!applet->configure(cfg, std::move(transport)) || !applet->start()) {
+        printf("GROUND_RELAY_EXIT %s rc=1\n", name);
+        return;
+    }
+    applets[index] = std::move(applet);
 }
 
 // USB channel 3 "sync": the Android app runs a SynchClient against this
@@ -614,6 +593,11 @@ extern "C" void app_main(void)
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "Ethernet: %s", esp_err_to_name(err));
+    }
+
+    if (!app_kit::start_reactor(app_kit::k_apps_reactor, apps_thread))
+    {
+        printf("GROUND_APPS_REACTOR_FAILED\n");
     }
 
     start_radio_queues();

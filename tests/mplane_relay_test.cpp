@@ -5,6 +5,7 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -63,14 +64,12 @@ int main()
     std::deque<std::vector<uint8_t>> up;  // rover -> ground
     std::atomic<bool> stop {false};
     std::atomic<bool> rover_on {true};
-    mplane_relay::Stats last;
-
     mplane_relay::ServerConfig cfg;
     cfg.listen = "127.0.0.1:" + std::to_string(k_port);
     cfg.max_clients = 2;
-    cfg.stop = &stop;
+    mplane_relay::Hooks hooks;
     // Fake rover: answers every request at once, tagged with its id.
-    cfg.send = [&](const uint8_t* d, size_t n) {
+    hooks.send_air = [&](const uint8_t* d, size_t n) {
         if (!rover_on)
         {
             return true;
@@ -83,21 +82,33 @@ int main()
         up.push_back(air);
         return true;
     };
-    cfg.receive = [&](std::vector<uint8_t>* out) {
-        std::lock_guard<std::mutex> l(mu);
-        if (up.empty())
+    hooks.now_ms = [] {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    };
+    mplane_relay::Server server(cfg, hooks);
+    assert(server.ok());
+    std::thread relay([&] {
+        while (!stop.load())
         {
-            return false;
+            pollfd pfd {server.fd(), POLLIN, 0};
+            if (poll(&pfd, 1, 5) > 0)
+                server.on_readable();
+            for (;;)
+            {
+                std::vector<uint8_t> air;
+                {
+                    std::lock_guard<std::mutex> l(mu);
+                    if (up.empty()) break;
+                    air = std::move(up.front());
+                    up.pop_front();
+                }
+                server.on_air(air.data(), air.size());
+            }
+            server.tick();
         }
-        *out = up.front();
-        up.pop_front();
-        return true;
-    };
-    cfg.on_stats = [&](const mplane_relay::Stats& s) {
-        std::lock_guard<std::mutex> l(mu);
-        last = s;
-    };
-    std::thread relay([&] { assert(mplane_relay::server_main(cfg) == 0); });
+    });
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
     Operator a, b, c;
@@ -135,6 +146,7 @@ int main()
 
     stop = true;
     relay.join();
+    const auto last = server.stats();
     assert(last.requests == 5);
     assert(last.replies == 5);
     assert(last.too_big == 1);
