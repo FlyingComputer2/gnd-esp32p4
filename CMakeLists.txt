@@ -14,7 +14,14 @@ FetchContent_GetProperties(winject_l3)
 if(NOT winject_l3_POPULATED)
     FetchContent_Populate(winject_l3)
 endif()
-# Declare the shared BFC pin before the proxy declares it.
+# The shared BFC pin, declared before winject-l3's BfcFetch.cmake and the
+# proxy's (FetchContent keeps the first declaration): 59056e8 adds removals
+# that fit fixed-size reactor callbacks and default_reactor<> on
+# large_function (app_kit uses both).
+FetchContent_Declare(bfc
+    GIT_REPOSITORY https://github.com/therooftopprinz/BFC.git
+    GIT_TAG 59056e8a1c59b35cf9bbb3e08e3ec9df98e91a76
+)
 include(${winject_l3_SOURCE_DIR}/src/BfcFetch.cmake)
 
 FetchContent_Declare(winject_sdio_proxy
