@@ -93,7 +93,7 @@ echo status | nc -u -w1 <ground> 5112   # rover sync client status
 UDP 2430 reaches the rover's udp_ota over upstream 9 (one client at a time); it is unauthenticated and can replace
 and reboot the rover's app and C6 and rewrite its config files.
 
-Low-rate applets share one reactor thread (`components/app_kit`, a `bfc::default_reactor` registered as `apps`, priority 12, PSRAM stack): the tester (console 5100 and receive side), the krono server (polled every 1 ms; console 5110) and the RC bridge (UDP 5120 and telemetry drain), each registering its callbacks on `start()`, at most `app_kit::k_max_batch` (16) datagrams per socket or queue per pass. `components/app_kit` and `components/applets` are kept identical to rov-esp32p4's.
+Low-rate applets share one reactor thread (`components/app_kit`, a `bfc::default_reactor` registered as `apps`, priority 12, PSRAM stack): the tester (console 5100 and receive side), the krono server (answers each request as it arrives; console 5110) and the RC bridge (UDP 5120 and telemetry drain), each registering its callbacks on `start()`. Their upstreams (0, 2, 3) are `QUEUE_FORWARDING` on named queues (`<name>_tx` / `<name>_rx`, L3's side on `ground-radio`); a push from L3 wakes the reactor, so nothing polls. At most `app_kit::k_max_batch` (16) datagrams per socket or queue per pass. `components/app_kit` and `components/applets` are kept identical to rov-esp32p4's.
 
 L3 creates the `UpstreamQueue` for the video upstream (no queue names in its
 config) and hands it over through `Config::on_upstream_queue`. The video service
@@ -219,7 +219,7 @@ latency in microseconds since the last `clr`, alongside existing packet/byte/dro
 counters. Both boards can send or receive timestamped test traffic.
 
 Latency spans sender queue submission to receiver polling, including queueing,
-L3/FEC/radio transport, the 2 ms receive poll on the app reactor, and scheduling.
+L3/FEC/radio transport, the receiver's wake-up on the app reactor, and scheduling.
 Accurate readings require synchronized realtime clocks: ground is the krono
 reference and rover follows it. Legacy, malformed, zero or future timestamps
 count as `lat_invalid` and do not contribute to latency samples. Zero statistics

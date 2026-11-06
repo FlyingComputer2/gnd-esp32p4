@@ -88,50 +88,42 @@ void print_cpu() {
     printf("GROUND_CPU%s\n", line.c_str());
 }
 
-// The tester's console and receive side run on the app reactor. Only an
-// active sender gets a transient low-priority thread.
-void start_bwtest(std::shared_ptr<winject::UpstreamQueue> up) {
-    static bool started = false;
-    if (started) {
-        ESP_LOGW(TAG, "bwtest upstream replaced; restart to rebind the tester");
-        return;
-    }
-    started = true;
-    static applets::BwtestApplet applet;
-    applets::bwtest_config cfg;
-    if (!applet.configure(std::move(up), cfg) || !applet.start())
-        printf("GROUND_BWTEST_EXIT rc=1\n");
-}
+// The applets' upstreams: QUEUE_FORWARDING on named queues (L3's `rx` =
+// <name>_tx, the app's send side; `tx` = <name>_rx) with L3's side on the
+// ground-radio reactor. Registered before L3 starts; the applets find them
+// by name and are woken when L3 pushes (app_kit).
+struct app_upstream {
+    app_kit::upstream_names names;
+    size_t capacity;
+};
+const app_upstream synch_up{{"synch_tx", "synch_rx"}, 16};
+const app_upstream bwtest_up{{"bwtest_tx", "bwtest_rx"}, 256};
+const app_upstream rc_up_queues{{"rc_tx", "rc_rx"}, 16};
 
-// krono's datagram transport over an L3-owned upstream queue.
-krono::Transport synch_transport(std::shared_ptr<winject::UpstreamQueue> up) {
-    return krono::Transport{
-        [up](const uint8_t *data, size_t len) { return up->try_send(data, len); },
-        [up](std::vector<uint8_t> *out) {
-            auto packet = up->receive();
-            if (!packet) return false;
-            const auto *p = reinterpret_cast<const uint8_t *>(packet->data());
-            out->assign(p, p + packet->size());
-            return true;
-        }};
-}
-
-// Runs the clock-sync server, the reference clock, on the app reactor.
-// The rover's sync pulse arrives on GPIO20 (JP1 pin 17): active low, Hi-Z at
-// rest, pulled up here. Priority 12 so replies are stamped promptly.
+// The clock-sync server, the reference clock: answers each request as it
+// arrives, on the app reactor. The rover's sync pulse arrives on GPIO20 (JP1
+// pin 17): active low, Hi-Z at rest, pulled up here.
 constexpr int synch_capture_gpio = 20;
-void start_synch(std::shared_ptr<winject::UpstreamQueue> up) {
-    static bool started = false;
-    if (started) {
-        ESP_LOGW(TAG, "synch upstream replaced; restart to rebind the server");
-        return;
-    }
-    started = true;
-    static applets::SynchServerApplet applet;
-    applets::synch_server_config cfg;
-    cfg.edges = krono::start_gpio_edge_capture(synch_capture_gpio);
-    if (!applet.configure(synch_transport(std::move(up)), cfg) || !applet.start())
-        printf("GROUND_SYNCH_EXIT rc=1\n");
+
+void start_rc_bridge();
+
+// Configures and starts the applets on the app reactor and their named
+// queues, before L3 starts. They live for the program.
+void start_applets() {
+    static applets::SynchServerApplet synch;
+    applets::synch_server_config sc;
+    sc.data = synch_up.names;
+    sc.edges = krono::start_gpio_edge_capture(synch_capture_gpio);
+    if (!synch.configure(sc) || !synch.start()) printf("GROUND_SYNCH_EXIT rc=1\n");
+
+    // Console and receive side on the reactor; only an active sender gets a
+    // transient low-priority thread.
+    static applets::BwtestApplet bwtest;
+    applets::bwtest_config bw;
+    bw.data = bwtest_up.names;
+    if (!bwtest.configure(bw) || !bwtest.start()) printf("GROUND_BWTEST_EXIT rc=1\n");
+
+    start_rc_bridge();
 }
 
 // USB channel 3 "sync": the Android app runs a SynchClient against this
@@ -205,28 +197,31 @@ void register_usb_rc() {
 }
 
 // The UDP side of the RC bridge, on the app reactor: datagrams on 5120 go up
-// (at most app_kit::k_max_batch per pass), and every 2 ms telemetry from the
-// rover goes to the last UDP sender (for 10 s after it last sent) and to the
-// USB channel. The reactor runs at priority 12, above the old bridge thread's 10.
-constexpr uint32_t rc_poll_ms = 2;
+// (at most app_kit::k_max_batch per pass), and telemetry from the rover goes,
+// as it arrives, to the last UDP sender (for 10 s after it last sent) and to
+// the USB channel. The reactor runs at priority 12, above the old bridge
+// thread's 10.
 struct rc_peer_s {
     sockaddr_in addr{};
     int64_t until = 0;
 };
 
-void start_rc_bridge(std::shared_ptr<winject::UpstreamQueue> up) {
+void start_rc_bridge() {
+    auto reactor = app_kit::find_reactor(app_kit::k_apps_reactor);
+    app_kit::upstream_queues q;
+    if (!reactor || !app_kit::find_upstream_queues(rc_up_queues.names, &q)) {
+        printf("GROUND_RC_BRIDGE no reactor or queues\n");
+        return;
+    }
+    // rc_send_up (USB service, UDP) and the USB channel's ready check use it.
+    auto up = std::make_shared<winject::UpstreamQueue>(q.to_l3, q.from_l3);
     {
         std::lock_guard<std::mutex> lock(rc_mu);
-        if (rc_up) {
-            ESP_LOGW(TAG, "rover_sample upstream replaced; restart to rebind the bridge");
-            return;
-        }
         rc_up = up;
     }
-    auto reactor = app_kit::find_reactor(app_kit::k_apps_reactor);
     sockaddr_in addr{};
     const int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (!reactor || fd < 0 || !winject::parse_host_port(rc_udp_console, &addr) ||
+    if (fd < 0 || !winject::parse_host_port(rc_udp_console, &addr) ||
         bind(fd, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr)) != 0) {
         printf("GROUND_RC_BRIDGE cannot bind %s\n", rc_udp_console);
         if (fd >= 0) close(fd);
@@ -247,7 +242,8 @@ void start_rc_bridge(std::shared_ptr<winject::UpstreamQueue> up) {
             peer->until = esp_timer_get_time() + 10000000;
         }
     });
-    app_kit::every(*reactor, rc_poll_ms, [fd, peer, up] {
+    // Telemetry from the rover, as it arrives.
+    app_kit::on_receive(*reactor, q, [fd, peer, up] {
         const int64_t now = esp_timer_get_time();
         for (size_t i = 0; i < app_kit::k_max_batch; ++i) {
             auto frame = up->receive();
@@ -393,7 +389,9 @@ static void *l3_main(void *)
     synch.mode = winject::UpstreamMode::queue;
     synch.bus_tx = 0xa1;
     synch.bus_rx = 0xb2;
-    synch.rx_queue_capacity = 16;
+    synch.endpoint.rx = synch_up.names.to_l3;
+    synch.endpoint.tx = synch_up.names.from_l3;
+    synch.reactor = radio_reactor_name;
     synch.scheduler_budget = 256;
     synch.fec_type = winject::FecType::none; // A lost exchange is a timeout.
     cfg.upstreams.push_back(synch);
@@ -411,7 +409,9 @@ static void *l3_main(void *)
     bwtest.mode = winject::UpstreamMode::queue;
     bwtest.bus_tx = 0xe5;
     bwtest.bus_rx = 0xf6;
-    bwtest.rx_queue_capacity = 256;
+    bwtest.endpoint.rx = bwtest_up.names.to_l3;
+    bwtest.endpoint.tx = bwtest_up.names.from_l3;
+    bwtest.reactor = radio_reactor_name;
     bwtest.scheduler_budget = 4096;
     bwtest.fec_type = winject::FecType::none; // Clean loss counts.
     cfg.upstreams.push_back(bwtest);
@@ -420,7 +420,9 @@ static void *l3_main(void *)
     rover_rc.mode = winject::UpstreamMode::queue;
     rover_rc.bus_tx = 0x28;
     rover_rc.bus_rx = 0x17;
-    rover_rc.rx_queue_capacity = 16;
+    rover_rc.endpoint.rx = rc_up_queues.names.to_l3;
+    rover_rc.endpoint.tx = rc_up_queues.names.from_l3;
+    rover_rc.reactor = radio_reactor_name;
     rover_rc.scheduler_budget = 256;
     rover_rc.fec_type = winject::FecType::none; // RC repeats at 50 Hz; FEC only adds latency.
     cfg.upstreams.push_back(rover_rc);
@@ -493,23 +495,11 @@ static void *l3_main(void *)
     }
     cfg.on_upstream_queue = [](size_t index, std::shared_ptr<winject::UpstreamQueue> up)
     {
-        if (index == 0)
-        {
-            start_synch(std::move(up));
-        }
-        else if (index == 1)
+        if (index == 1)
         {
             ESP_ERROR_CHECK(ground_video_start(std::move(up)));
             ESP_ERROR_CHECK(usb_upstream_start());
             printf("GROUND_READY usb=v2 video=0 msp_displayport=1:tba msp_rc_telemetry=2 sync=3\n");
-        }
-        else if (index == 2)
-        {
-            start_bwtest(std::move(up));
-        }
-        else if (index == 3)
-        {
-            start_rc_bridge(std::move(up));
         }
     };
     // winject-l3 starts its upstream reactor with std::thread from this thread;
@@ -549,6 +539,9 @@ extern "C" void app_main(void)
     }
 
     start_radio_queues();
+    for (const app_upstream *u : {&synch_up, &bwtest_up, &rc_up_queues})
+        ESP_ERROR_CHECK(app_kit::add_upstream_queues(u->names, u->capacity) ? ESP_OK : ESP_FAIL);
+    start_applets();
     register_usb_synch();
     register_usb_rc();
     winject_proxy_config_t cfg = WINJECT_PROXY_CONFIG_DEFAULT();
