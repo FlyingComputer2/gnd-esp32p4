@@ -3,9 +3,9 @@
 // 2 bandwidth tester (app_bwtest, UDP console 5100), 3 rover_sample RC /
 // telemetry (bridged, see below), 4 rover L3 m-plane (UDP 2410), 5 rover C6
 // m-plane (UDP 2420), 6 rover vstreamer m-plane (UDP 5092), 7 rover tester
-// console (UDP 5102), 8 rover clock-sync console (UDP 5112); 7 and 8 take
-// several operators at once (mplane_relay); 9 rover app update and config
-// files (udp_ota, UDP 2430), relayed the same way. Buses as on the rover, swapped:
+// m-plane (UDP 5102), 8 rover clock-sync m-plane (UDP 5112), 9 rover udp_ota
+// (app, C6 and config files, UDP 2430). 4-9 are udp_server upstreams: replies
+// go to the last sender, one operator at a time. Buses as on the rover, swapped:
 // sync a1/b2, video d4/c3, tester e5/f6, rover_sample 28/17, L3 m-plane
 // a6/6a, C6 m-plane c7/7c, vstreamer m-plane d8/8d, tester console b4/4b,
 // sync console c5/5c, udp_ota e9/9e.
@@ -30,7 +30,6 @@
 #include "esp_pthread.h"
 #include "app_kit.hpp"
 #include "applets.hpp"
-#include "mplane_relay_applet.hpp"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
@@ -46,7 +45,6 @@
 #include <mutex>
 #include <sys/socket.h>
 #include <thread>
-#include <tuple>
 #include "utils/NetUtil.h"
 
 static const char *TAG = "rover_ground";
@@ -136,39 +134,6 @@ void start_synch(std::shared_ptr<winject::UpstreamQueue> up) {
         printf("GROUND_SYNCH_EXIT rc=1\n");
 }
 
-// Serves a rover console to operators on `listen` over its upstream's queue
-// (mplane_relay): each operator address gets a client id, so replies go back
-// to whoever asked, unlike the udp_server upstreams 4-6 (last sender only).
-// A few datagrams per command, served on the app reactor.
-void start_mplane_relay(size_t index, std::shared_ptr<winject::UpstreamQueue> up,
-                        const char *name, const char *listen) {
-    static std::atomic<uint32_t> started{0};
-    static std::unique_ptr<mplane_relay::Applet> applets[32];
-    const uint32_t bit = 1u << index;
-    if (started.fetch_or(bit) & bit) {
-        ESP_LOGW(TAG, "%s upstream replaced; restart to rebind the relay", name);
-        return;
-    }
-    mplane_relay::AppletConfig cfg;
-    cfg.name = name;
-    cfg.relay.listen = listen;
-    mplane_relay::Transport transport;
-    transport.send = [up](const uint8_t *data, size_t len) { return up->try_send(data, len); };
-    transport.receive = [up](std::vector<uint8_t> *out) {
-            auto packet = up->receive();
-            if (!packet) return false;
-            const auto *p = reinterpret_cast<const uint8_t *>(packet->data());
-            out->assign(p, p + packet->size());
-            return true;
-        };
-    auto applet = std::make_unique<mplane_relay::Applet>();
-    if (!applet->configure(cfg, std::move(transport)) || !applet->start()) {
-        printf("GROUND_RELAY_EXIT %s rc=1\n", name);
-        return;
-    }
-    applets[index] = std::move(applet);
-}
-
 // USB channel 3 "sync": the Android app runs a SynchClient against this
 // board's clock, the same reference the rover follows, so it can turn the
 // rover's RTP capture stamps into latency. Requests are answered as they
@@ -239,42 +204,15 @@ void register_usb_rc() {
     if (err != ESP_OK) printf("GROUND_USB_RC register failed err=0x%x\n", err);
 }
 
-void run_rc_bridge(std::shared_ptr<winject::UpstreamQueue> up) {
+// The UDP side of the RC bridge, on the app reactor: datagrams on 5120 go up
+// (at most app_kit::k_max_batch per pass), and every 2 ms telemetry from the
+// rover goes to the last UDP sender (for 10 s after it last sent) and to the
+// USB channel. The reactor runs at priority 12, above the old bridge thread's 10.
+constexpr uint32_t rc_poll_ms = 2;
+struct rc_peer_s {
     sockaddr_in addr{};
-    const int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0 || !winject::parse_host_port(rc_udp_console, &addr) ||
-        bind(fd, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr)) != 0) {
-        printf("GROUND_RC_BRIDGE cannot bind %s\n", rc_udp_console);
-        return;
-    }
-    // Short timeout: the same loop drains telemetry every couple of ms.
-    timeval timeout{};
-    timeout.tv_usec = 2000;
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    sockaddr_in peer{};
-    int64_t peer_until = 0;
-    uint8_t buf[256];
-    for (;;) {
-        sockaddr_in from{};
-        socklen_t from_len = sizeof(from);
-        const ssize_t n = recvfrom(fd, buf, sizeof(buf), 0, reinterpret_cast<sockaddr *>(&from), &from_len);
-        const int64_t now = esp_timer_get_time();
-        if (n > 0) {
-            rc_send_up(buf, size_t(n));
-            peer = from;
-            peer_until = now + 10000000;
-        }
-        while (auto frame = up->receive()) {
-            ++rc_down_frames;
-            if (now < peer_until)
-                sendto(fd, frame->data(), frame->size(), 0, reinterpret_cast<const sockaddr *>(&peer), sizeof(peer));
-            std::lock_guard<std::mutex> lock(rc_mu);
-            // The phone wants the newest telemetry; keep a few.
-            if (usb_rc_down.size() >= 8) usb_rc_down.pop_front();
-            usb_rc_down.push_back(std::move(*frame));
-        }
-    }
-}
+    int64_t until = 0;
+};
 
 void start_rc_bridge(std::shared_ptr<winject::UpstreamQueue> up) {
     {
@@ -285,16 +223,45 @@ void start_rc_bridge(std::shared_ptr<winject::UpstreamQueue> up) {
         }
         rc_up = up;
     }
-    esp_pthread_cfg_t prev {};
-    const bool had_prev = esp_pthread_get_cfg(&prev) == ESP_OK;
-    auto cfg = esp_pthread_get_default_config();
-    cfg.stack_size = 4 * 1024;
-    cfg.prio = 10;
-    cfg.thread_name = "rc_bridge";
-    cfg.inherit_cfg = true;
-    esp_pthread_set_cfg(&cfg);
-    std::thread(run_rc_bridge, std::move(up)).detach();
-    if (had_prev) esp_pthread_set_cfg(&prev);
+    auto reactor = app_kit::find_reactor(app_kit::k_apps_reactor);
+    sockaddr_in addr{};
+    const int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (!reactor || fd < 0 || !winject::parse_host_port(rc_udp_console, &addr) ||
+        bind(fd, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr)) != 0) {
+        printf("GROUND_RC_BRIDGE cannot bind %s\n", rc_udp_console);
+        if (fd >= 0) close(fd);
+        return;
+    }
+    // Reactor thread only.
+    auto peer = std::make_shared<rc_peer_s>();
+    app_kit::watch(*reactor, fd, [fd, peer] {
+        uint8_t buf[256];
+        for (size_t i = 0; i < app_kit::k_max_batch; ++i) {
+            sockaddr_in from{};
+            socklen_t from_len = sizeof(from);
+            const ssize_t n = recvfrom(fd, buf, sizeof(buf), MSG_DONTWAIT,
+                                       reinterpret_cast<sockaddr *>(&from), &from_len);
+            if (n <= 0) return;
+            rc_send_up(buf, size_t(n));
+            peer->addr = from;
+            peer->until = esp_timer_get_time() + 10000000;
+        }
+    });
+    app_kit::every(*reactor, rc_poll_ms, [fd, peer, up] {
+        const int64_t now = esp_timer_get_time();
+        for (size_t i = 0; i < app_kit::k_max_batch; ++i) {
+            auto frame = up->receive();
+            if (!frame) return;
+            ++rc_down_frames;
+            if (now < peer->until)
+                sendto(fd, frame->data(), frame->size(), 0, reinterpret_cast<const sockaddr *>(&peer->addr),
+                       sizeof(peer->addr));
+            std::lock_guard<std::mutex> lock(rc_mu);
+            // The phone wants the newest telemetry; keep a few.
+            if (usb_rc_down.size() >= 8) usb_rc_down.pop_front();
+            usb_rc_down.push_back(std::move(*frame));
+        }
+    });
 }
 
 void start_radio_queues() {
@@ -499,38 +466,31 @@ static void *l3_main(void *)
     rover_video_mplane.scheduler_budget = 256;
     rover_video_mplane.fec_type = winject::FecType::none;
     cfg.upstreams.push_back(rover_video_mplane);
-    // Upstreams 7 and 8: the rover tester's (5100) and clock-sync client's
-    // (5110) consoles, served here on 5102 / 5112 since this board's own use
-    // 5100 / 5110. L3-owned queues relayed by mplane_relay, so several
-    // operators can use them at once. No authentication: bandwidth tests and
-    // the rover's sync mode are exposed over the air.
-    for (const auto &[index, bus_tx, bus_rx] :
-         {std::tuple<size_t, uint8_t, uint8_t>{7, 0xb4, 0x4b}, {8, 0xc5, 0x5c}}) {
-        winject::UpstreamConfig console;
-        console.index = index;
-        console.mode = winject::UpstreamMode::queue;
-        console.bus_tx = bus_tx;
-        console.bus_rx = bus_rx;
-        console.rx_queue_capacity = 16;
-        console.scheduler_budget = 256;
-        console.fec_type = winject::FecType::none;
-        cfg.upstreams.push_back(console);
+    // Upstreams 7-9, like 4-6: UDP servers that reply to the last sender, one
+    // operator at a time. 7 and 8 are the rover tester's and clock-sync
+    // client's m-planes (their console commands, served directly on the
+    // rover's upstream), here on 5102 / 5112 since this board's own consoles
+    // use 5100 / 5110. 9 is the rover's udp_ota (its app, its C6 and config
+    // files; the rover forwards it to its UDP 3232): run the SDIO proxy's
+    // tools/udp_ota.py against this board's UDP 2430 (this board's own
+    // udp_ota is on 3232); no FEC, the tool retransmits. No authentication:
+    // bandwidth tests, the rover's sync mode, its firmware and config are
+    // exposed over the air.
+    struct rover_mplane_s { size_t index; const char *rx; uint8_t bus_tx, bus_rx; size_t queue, budget; };
+    for (const auto &m : {rover_mplane_s{7, "0.0.0.0:5102", 0xb4, 0x4b, 16, 256},
+                          rover_mplane_s{8, "0.0.0.0:5112", 0xc5, 0x5c, 16, 256},
+                          rover_mplane_s{9, "0.0.0.0:2430", 0xe9, 0x9e, 64, 4096}}) {
+        winject::UpstreamConfig u;
+        u.index = m.index;
+        u.mode = winject::UpstreamMode::udp_server;
+        u.endpoint.rx = m.rx;
+        u.bus_tx = m.bus_tx;
+        u.bus_rx = m.bus_rx;
+        u.rx_queue_capacity = m.queue;
+        u.scheduler_budget = m.budget;
+        u.fec_type = winject::FecType::none;
+        cfg.upstreams.push_back(u);
     }
-    // Upstream 9: the rover's udp_ota (its app, its C6 and config files, UDP
-    // 3232 on the rover). Run the SDIO proxy's tools/udp_ota.py against this
-    // board's UDP 2430 (this board's own udp_ota is on 3232). An L3-owned queue relayed by mplane_relay like 7 and 8, so
-    // several clients can use it at once. No FEC: the tool retransmits. There
-    // is no authentication: anyone reaching this port can replace and reboot
-    // the rover's app and rewrite its config.
-    winject::UpstreamConfig rover_ota;
-    rover_ota.index = 9;
-    rover_ota.mode = winject::UpstreamMode::queue;
-    rover_ota.bus_tx = 0xe9;
-    rover_ota.bus_rx = 0x9e;
-    rover_ota.rx_queue_capacity = 64;
-    rover_ota.scheduler_budget = 4096;
-    rover_ota.fec_type = winject::FecType::none;
-    cfg.upstreams.push_back(rover_ota);
     cfg.on_upstream_queue = [](size_t index, std::shared_ptr<winject::UpstreamQueue> up)
     {
         if (index == 0)
@@ -550,18 +510,6 @@ static void *l3_main(void *)
         else if (index == 3)
         {
             start_rc_bridge(std::move(up));
-        }
-        else if (index == 7)
-        {
-            start_mplane_relay(index, std::move(up), "bw_relay", "0.0.0.0:5102");
-        }
-        else if (index == 8)
-        {
-            start_mplane_relay(index, std::move(up), "synch_relay", "0.0.0.0:5112");
-        }
-        else if (index == 9)
-        {
-            start_mplane_relay(index, std::move(up), "ota_relay", "0.0.0.0:2430");
         }
     };
     // winject-l3 starts its upstream reactor with std::thread from this thread;

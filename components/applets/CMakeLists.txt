@@ -1,3 +1,5 @@
+# applets: app_bwtest and the krono client on a named app reactor (app_kit),
+# driving the libraries' classes instead of their *_main loops.
 idf_component_register(
     SRCS applets.cpp
     INCLUDE_DIRS include

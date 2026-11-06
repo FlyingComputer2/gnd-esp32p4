@@ -1,3 +1,7 @@
+# app_kit: named app reactors (bfc::default_reactor in
+# bfc::default_reactor_registry) and the common thread default. bfc is the
+# project's FetchContent declaration (the one winject-l3, vstreamer and the
+# proxy build against); not populated during IDF's early requirement scan.
 if(NOT CMAKE_BUILD_EARLY_EXPANSION)
     include(FetchContent)
     FetchContent_GetProperties(bfc)

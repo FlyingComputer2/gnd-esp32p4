@@ -52,9 +52,9 @@ channel 1, OFDM_24M, 15 dBm. Upstreams (buses follow the flow, not the index):
 | 4 | Rover L3 m-plane: UDP server `0.0.0.0:2410`, replies go to the last sender (one operator at a time); replies over ~1445 B are dropped | a6 / 6a | none |
 | 5 | Rover C6 radio m-plane: UDP server `0.0.0.0:2420`; the rover forwards it to its proxy on UDP 22 | c7 / 7c | none |
 | 6 | Rover vstreamer m-plane: UDP server `0.0.0.0:5092`; the rover forwards it to its vstreamer on UDP 5090 | d8 / 8d | none |
-| 7 | Rover bandwidth tester console: UDP `0.0.0.0:5102` (mplane_relay, several operators at once) → rover UDP 5100 | b4 / 4b | none |
-| 8 | Rover clock-sync console: UDP `0.0.0.0:5112` (mplane_relay, several operators at once) → rover UDP 5110 | c5 / 5c | none |
-| 9 | Rover udp_ota (its app, its C6, config files): UDP `0.0.0.0:2430` (mplane_relay, several clients at once) → rover UDP 3232 (SDIO proxy `tools/udp_ota.py <ground>:2430 flash <app.bin> --reboot`, `flash-c6`, `fs-get` / `fs-put`) | e9 / 9e | none (the tool retransmits) |
+| 7 | Rover bandwidth tester m-plane: UDP server `0.0.0.0:5102` (replies to the last sender, one operator at a time); the rover's tester serves it directly on its upstream | b4 / 4b | none |
+| 8 | Rover clock-sync m-plane: UDP server `0.0.0.0:5112` (one operator at a time); the rover's krono client serves it directly on its upstream | c5 / 5c | none |
+| 9 | Rover udp_ota (its app, its C6, config files): UDP server `0.0.0.0:2430` (one client at a time); the rover forwards it to udp_ota on UDP 3232 (SDIO proxy `tools/udp_ota.py <ground>:2430 flash <app.bin> --reboot`, `flash-c6`, `fs-get` / `fs-put`) | e9 / 9e | none (the tool retransmits) |
 
 Upstream 3 carries the rover's rover_sample protocol, MSP v2 with one frame per datagram (wire, messages and
 the rover's console: rov-esp32p4 README, "RC car"). This board does not parse it. Frames from USB channel 2
@@ -80,20 +80,20 @@ UDP 5092 reaches the rover vstreamer m-plane over upstream 6; it is unauthentica
 video source, payloader and sender, and pause live TX (`set tx pause 1|0`). The ground's own receiver m-plane
 remains on UDP 5090.
 
-UDP 5102 and 5112 reach the rover's bandwidth tester (5100) and clock-sync client (5110) consoles over upstreams 7
-and 8, so a rover bwtest or a sync status no longer needs the rover's Ethernet. Unlike the udp_server upstreams 4-6,
-which reply to the last sender, these take several operators at once: `components/mplane_relay` gives each
-operator address a 1-byte client id (air datagram `[id][request]`, up to 8 operators, least recently active
-forgotten first, 2 min idle), and the rover relay sends each request from that client's own loopback socket, so
-every reply returns to whoever asked. Replies over 1444 bytes are dropped. Both are unauthenticated.
+UDP 5102 and 5112 reach the rover's bandwidth tester and clock-sync client m-planes over upstreams 7 and 8 (the
+same commands as their consoles on the rover's UDP 5100 / 5110, served directly on the rover's upstreams), so a
+rover bwtest or a sync status no longer needs the rover's Ethernet. Like 4-6 they are UDP servers that reply to
+the last sender: one operator at a time. Both are unauthenticated.
 
 ```sh
 echo stats  | nc -u -w1 <ground> 5102   # rover tester counters
 echo status | nc -u -w1 <ground> 5112   # rover sync client status
 ```
 
-UDP 2430 reaches the rover's udp_ota over upstream 9 (through mplane_relay, like 5102 / 5112); it is
-unauthenticated and can replace and reboot the rover's app and rewrite its config files.
+UDP 2430 reaches the rover's udp_ota over upstream 9 (one client at a time); it is unauthenticated and can replace
+and reboot the rover's app and C6 and rewrite its config files.
+
+Low-rate applets share one reactor thread (`components/app_kit`, a `bfc::default_reactor` registered as `apps`, priority 12, PSRAM stack): the tester (console 5100 and receive side), the krono server (polled every 1 ms; console 5110) and the RC bridge (UDP 5120 and telemetry drain), each registering its callbacks on `start()`, at most `app_kit::k_max_batch` (16) datagrams per socket or queue per pass. `components/app_kit` and `components/applets` are kept identical to rov-esp32p4's.
 
 L3 creates the `UpstreamQueue` for the video upstream (no queue names in its
 config) and hands it over through `Config::on_upstream_queue`. The video service
@@ -219,7 +219,7 @@ latency in microseconds since the last `clr`, alongside existing packet/byte/dro
 counters. Both boards can send or receive timestamped test traffic.
 
 Latency spans sender queue submission to receiver polling, including queueing,
-L3/FEC/radio transport, the 10 ms idle receive poll interval, and scheduling.
+L3/FEC/radio transport, the 2 ms receive poll on the app reactor, and scheduling.
 Accurate readings require synchronized realtime clocks: ground is the krono
 reference and rover follows it. Legacy, malformed, zero or future timestamps
 count as `lat_invalid` and do not contribute to latency samples. Zero statistics
