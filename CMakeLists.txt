@@ -21,7 +21,7 @@ endif()
 # large_function, and serves reactive queues (the applets use both).
 FetchContent_Declare(bfc
     GIT_REPOSITORY https://github.com/therooftopprinz/BFC.git
-    GIT_TAG 0bd45a15e62e353e1e922022bf60e4d710126afa
+    GIT_TAG 1f732b19927dbe2c7092b2c93181ff21042d0781
 )
 include(${winject_l3_SOURCE_DIR}/src/BfcFetch.cmake)
 
