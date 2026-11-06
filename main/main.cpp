@@ -28,7 +28,6 @@
 #include "esp_netif_sntp.h"
 #include "esp_sntp.h"
 #include "esp_pthread.h"
-#include "app_kit.hpp"
 #include "applets.hpp"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -49,8 +48,15 @@
 
 static const char *TAG = "rover_ground";
 namespace {
-constexpr app_kit::thread_spec apps_thread {"apps", 6 * 1024, 12, -1,
-                                             app_kit::stack_in::psram, false};
+// The app reactor, a bfc::default_reactor<> registered as "apps" in
+// bfc::default_reactor_registry: the applets attach to it by name. Socket and
+// queue callbacks only (no flash), so a PSRAM stack; priority 12, for the
+// clock-sync server's reference timestamps.
+constexpr const char *apps_reactor_name = "apps";
+std::shared_ptr<bfc::default_reactor<>> apps_reactor;
+// At most this many datagrams per socket or queue per reactor pass (the
+// reactor comes back for the rest).
+constexpr size_t max_batch = 16;
 constexpr const char *radio_tx_name = "ground-radio-tx";
 constexpr const char *radio_rx_name = "ground-radio-rx";
 constexpr const char *radio_reactor_name = "ground-radio";
@@ -91,9 +97,9 @@ void print_cpu() {
 // The applets' upstreams: QUEUE_FORWARDING on named queues (L3's `rx` =
 // <name>_tx, the app's send side; `tx` = <name>_rx) with L3's side on the
 // ground-radio reactor. Registered before L3 starts; the applets find them
-// by name and are woken when L3 pushes (app_kit).
+// by name and are woken when L3 pushes.
 struct app_upstream {
-    app_kit::upstream_names names;
+    applets::upstream_names names;
     size_t capacity;
 };
 const app_upstream synch_up{{"synch_tx", "synch_rx"}, 16};
@@ -112,6 +118,7 @@ void start_rc_bridge();
 void start_applets() {
     static applets::SynchServerApplet synch;
     applets::synch_server_config sc;
+    sc.reactor = apps_reactor_name;
     sc.data = synch_up.names;
     sc.edges = krono::start_gpio_edge_capture(synch_capture_gpio);
     if (!synch.configure(sc) || !synch.start()) printf("GROUND_SYNCH_EXIT rc=1\n");
@@ -120,7 +127,14 @@ void start_applets() {
     // transient low-priority thread.
     static applets::BwtestApplet bwtest;
     applets::bwtest_config bw;
+    bw.reactor = apps_reactor_name;
     bw.data = bwtest_up.names;
+    auto sender = esp_pthread_get_default_config();
+    sender.stack_size = 6 * 1024;
+    sender.prio = 5;
+    sender.thread_name = "bwtest";
+    sender.stack_alloc_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;  // no flash I/O
+    bw.sender = sender;
     if (!bwtest.configure(bw) || !bwtest.start()) printf("GROUND_BWTEST_EXIT rc=1\n");
 
     start_rc_bridge();
@@ -197,7 +211,7 @@ void register_usb_rc() {
 }
 
 // The UDP side of the RC bridge, on the app reactor: datagrams on 5120 go up
-// (at most app_kit::k_max_batch per pass), and telemetry from the rover goes,
+// (at most max_batch per pass), and telemetry from the rover goes,
 // as it arrives, to the last UDP sender (for 10 s after it last sent) and to
 // the USB channel. The reactor runs at priority 12, above the old bridge
 // thread's 10.
@@ -207,14 +221,16 @@ struct rc_peer_s {
 };
 
 void start_rc_bridge() {
-    auto reactor = app_kit::find_reactor(app_kit::k_apps_reactor);
-    app_kit::upstream_queues q;
-    if (!reactor || !app_kit::find_upstream_queues(rc_up_queues.names, &q)) {
+    using queues = bfc::cv_reactor_circular_lossy_queue_registry<bfc::shared_sized_buffer>;
+    auto reactor = bfc::default_reactor_registry::get_instance().get(apps_reactor_name);
+    auto to_l3 = queues::get_instance().get(rc_up_queues.names.to_l3);
+    auto from_l3 = queues::get_instance().get(rc_up_queues.names.from_l3);
+    if (!reactor || !to_l3 || !from_l3) {
         printf("GROUND_RC_BRIDGE no reactor or queues\n");
         return;
     }
     // rc_send_up (USB service, UDP) and the USB channel's ready check use it.
-    auto up = std::make_shared<winject::UpstreamQueue>(q.to_l3, q.from_l3);
+    auto up = std::make_shared<winject::UpstreamQueue>(to_l3, from_l3);
     {
         std::lock_guard<std::mutex> lock(rc_mu);
         rc_up = up;
@@ -229,9 +245,9 @@ void start_rc_bridge() {
     }
     // Reactor thread only.
     auto peer = std::make_shared<rc_peer_s>();
-    app_kit::watch(*reactor, fd, [fd, peer] {
+    reactor->add_read_rdy(fd, [fd, peer] {
         uint8_t buf[256];
-        for (size_t i = 0; i < app_kit::k_max_batch; ++i) {
+        for (size_t i = 0; i < max_batch; ++i) {
             sockaddr_in from{};
             socklen_t from_len = sizeof(from);
             const ssize_t n = recvfrom(fd, buf, sizeof(buf), MSG_DONTWAIT,
@@ -242,10 +258,10 @@ void start_rc_bridge() {
             peer->until = esp_timer_get_time() + 10000000;
         }
     });
-    // Telemetry from the rover, as it arrives.
-    app_kit::on_receive(*reactor, q, [fd, peer, up] {
+    // Telemetry from the rover, as it arrives (a push wakes the reactor).
+    reactor->add_read_rdy(*from_l3, [fd, peer, up] {
         const int64_t now = esp_timer_get_time();
-        for (size_t i = 0; i < app_kit::k_max_batch; ++i) {
+        for (size_t i = 0; i < max_batch; ++i) {
             auto frame = up->receive();
             if (!frame) return;
             ++rc_down_frames;
@@ -258,6 +274,7 @@ void start_rc_bridge() {
             usb_rc_down.push_back(std::move(*frame));
         }
     });
+    from_l3->set_reactor(reactor);
 }
 
 void start_radio_queues() {
@@ -533,15 +550,37 @@ extern "C" void app_main(void)
         ESP_LOGE(TAG, "Ethernet: %s", esp_err_to_name(err));
     }
 
-    if (!app_kit::start_reactor(app_kit::k_apps_reactor, apps_thread))
-    {
+    apps_reactor = std::make_shared<bfc::default_reactor<>>();
+    if (!bfc::default_reactor_registry::get_instance().add(apps_reactor_name, apps_reactor))
         printf("GROUND_APPS_REACTOR_FAILED\n");
-    }
 
     start_radio_queues();
-    for (const app_upstream *u : {&synch_up, &bwtest_up, &rc_up_queues})
-        ESP_ERROR_CHECK(app_kit::add_upstream_queues(u->names, u->capacity) ? ESP_OK : ESP_FAIL);
+    using queues = bfc::cv_reactor_circular_lossy_queue_registry<bfc::shared_sized_buffer>;
+    for (const app_upstream *u : {&synch_up, &bwtest_up, &rc_up_queues}) {
+        for (const std::string *name : {&u->names.to_l3, &u->names.from_l3}) {
+            auto q = std::make_shared<winject::ReactiveLossyQueue>();
+            q->set_capacity(u->capacity);
+            ESP_ERROR_CHECK(queues::get_instance().add(*name, q) ? ESP_OK : ESP_FAIL);
+        }
+    }
+    // Callbacks first (registration is not thread-safe), then the thread.
     start_applets();
+    {
+        esp_pthread_cfg_t prev{};
+        const bool had_prev = esp_pthread_get_cfg(&prev) == ESP_OK;
+        auto cfg = esp_pthread_get_default_config();
+        cfg.stack_size = 6 * 1024;
+        cfg.prio = 12;
+        cfg.thread_name = "apps";
+        cfg.stack_alloc_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+        esp_pthread_set_cfg(&cfg);
+        std::thread([r = apps_reactor] { r->run(); }).detach();
+        if (had_prev) esp_pthread_set_cfg(&prev);
+        else {
+            const auto def = esp_pthread_get_default_config();
+            esp_pthread_set_cfg(&def);
+        }
+    }
     register_usb_synch();
     register_usb_rc();
     winject_proxy_config_t cfg = WINJECT_PROXY_CONFIG_DEFAULT();
