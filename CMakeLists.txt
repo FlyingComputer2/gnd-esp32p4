@@ -15,12 +15,13 @@ if(NOT winject_l3_POPULATED)
     FetchContent_Populate(winject_l3)
 endif()
 # The shared BFC pin, declared before winject-l3's BfcFetch.cmake and the
-# proxy's (FetchContent keeps the first declaration): it has removals
+# proxy's (FetchContent keeps the first declaration), ahead of their pins
+# (f6fe978): it has removals
 # that fit fixed-size reactor callbacks and default_reactor<> on
 # large_function, and serves reactive queues (the applets use both).
 FetchContent_Declare(bfc
     GIT_REPOSITORY https://github.com/therooftopprinz/BFC.git
-    GIT_TAG 38b4f3fc1d85e279761b97d43d3e0eb57fbd9991
+    GIT_TAG 0bd45a15e62e353e1e922022bf60e4d710126afa
 )
 include(${winject_l3_SOURCE_DIR}/src/BfcFetch.cmake)
 

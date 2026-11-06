@@ -573,6 +573,10 @@ extern "C" void app_main(void)
         cfg.prio = 12;
         cfg.thread_name = "apps";
         cfg.stack_alloc_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+        // Pinned: unpinned, the RISC-V port pins a task to the core it is on
+        // when it first uses the FPU (the rover's reactor was starved on core
+        // 0 that way). Core 1 is the one with room (IDLE1 ~85%).
+        cfg.pin_to_core = 1;
         esp_pthread_set_cfg(&cfg);
         std::thread([r = apps_reactor] { r->run(); }).detach();
         if (had_prev) esp_pthread_set_cfg(&prev);
