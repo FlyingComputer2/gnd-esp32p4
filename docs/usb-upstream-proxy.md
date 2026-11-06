@@ -131,7 +131,7 @@ Errors include `BAD_REQUEST`, `VERSION`, `HELLO_REQUIRED`, `NO_REMOTE_HANDLER`,
 `BACKEND_NOT_READY`, `ALREADY_OPEN_OR_CLOSED`, `NOT_OPEN` and `UNKNOWN_OP`.
 The Android app currently closes the whole transport on disconnect/error and
 reopens with a fresh reset. It does not expose an individual channel-close API.
-HTTP OTA remains available through Ethernet; bulk firmware update is not part
+udp_ota (UDP 3232) remains available through Ethernet; bulk firmware update is not part
 of this implementation.
 
 ## Credits, queues and scheduling

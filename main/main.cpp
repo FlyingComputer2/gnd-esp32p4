@@ -537,9 +537,9 @@ static void *l3_main(void *)
         console.fec_type = winject::FecType::none;
         cfg.upstreams.push_back(console);
     }
-    // Upstream 9: the rover's udp_ota (app update and config files, UDP 3232
-    // on the rover). Run rov-esp32p4 tools/udp_ota.py against this board's
-    // UDP 2430. An L3-owned queue relayed by mplane_relay like 7 and 8, so
+    // Upstream 9: the rover's udp_ota (its app, its C6 and config files, UDP
+    // 3232 on the rover). Run the SDIO proxy's tools/udp_ota.py against this
+    // board's UDP 2430 (this board's own udp_ota is on 3232). An L3-owned queue relayed by mplane_relay like 7 and 8, so
     // several clients can use it at once. No FEC: the tool retransmits. There
     // is no authentication: anyone reaching this port can replace and reboot
     // the rover's app and rewrite its config.
