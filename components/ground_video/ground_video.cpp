@@ -24,7 +24,7 @@ namespace {
 constexpr uint16_t multicast_port = 5600;
 constexpr const char *multicast_group = "239.255.42.1";
 rover::VideoFanout fanout;
-std::shared_ptr<winject::UpstreamQueue> upstream;
+std::shared_ptr<winject::core::UpstreamQueue> upstream;
 std::unique_ptr<vstreamer::stream_receiver> receiver;
 std::atomic<uint32_t> ethernet{0};
 std::atomic<bool> ready{false};
@@ -279,7 +279,7 @@ std::string ground_video_stats() {
 }
 
 void ground_video_set_ethernet(uint32_t address) { ethernet.store(address); }
-esp_err_t ground_video_start(std::shared_ptr<winject::UpstreamQueue> up) {
+esp_err_t ground_video_start(std::shared_ptr<winject::core::UpstreamQueue> up) {
     if (!up || receiver) return ESP_ERR_INVALID_STATE;
     auto rx = std::make_unique<vstreamer::stream_receiver>();
     if (rx->set_datagram_transport(
