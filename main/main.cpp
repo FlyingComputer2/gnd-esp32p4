@@ -16,6 +16,8 @@
 #include <stdio.h>
 
 #include "WinjectL3.h"
+#include "winject_l3/Console.h"
+#include "apps/bwtest/Bwtest.h"
 #include "synch/SynchGpio.h"
 #include "esp_eth.h"
 #include "esp_heap_caps.h"
@@ -43,6 +45,7 @@
 #include <memory>
 #include <mutex>
 #include <sys/socket.h>
+#include <future>
 #include <thread>
 #include "utils/NetUtil.h"
 
@@ -60,7 +63,7 @@ constexpr size_t max_batch = 16;
 constexpr const char *radio_tx_name = "ground-radio-tx";
 constexpr const char *radio_rx_name = "ground-radio-rx";
 constexpr const char *radio_reactor_name = "ground-radio";
-std::shared_ptr<winject::ReactiveLossyQueue> radio_tx, radio_rx;
+std::shared_ptr<winject::core::ReactiveLossyQueue> radio_tx, radio_rx;
 std::shared_ptr<bfc::cv_reactor<>> radio_reactor;
 void *run_radio_reactor(void *) { radio_reactor->run(); return nullptr; }
 void print_cpu() {
@@ -180,11 +183,11 @@ void register_usb_synch() {
 constexpr uint16_t usb_rc_channel = 2;
 constexpr const char *rc_udp_console = "0.0.0.0:5120";
 std::mutex rc_mu;
-std::shared_ptr<winject::UpstreamQueue> rc_up;  // set by on_upstream_queue
+std::shared_ptr<winject::core::UpstreamQueue> rc_up;  // set by on_upstream_queue
 std::deque<bfc::shared_sized_buffer> usb_rc_down;
 std::atomic<uint32_t> rc_up_frames{0}, rc_up_drops{0}, rc_down_frames{0};
 
-std::shared_ptr<winject::UpstreamQueue> rc_upstream() {
+std::shared_ptr<winject::core::UpstreamQueue> rc_upstream() {
     std::lock_guard<std::mutex> lock(rc_mu);
     return rc_up;
 }
@@ -230,14 +233,14 @@ void start_rc_bridge() {
         return;
     }
     // rc_send_up (USB service, UDP) and the USB channel's ready check use it.
-    auto up = std::make_shared<winject::UpstreamQueue>(to_l3, from_l3);
+    auto up = std::make_shared<winject::core::UpstreamQueue>(to_l3, from_l3);
     {
         std::lock_guard<std::mutex> lock(rc_mu);
         rc_up = up;
     }
     sockaddr_in addr{};
     const int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0 || !winject::parse_host_port(rc_udp_console, &addr) ||
+    if (fd < 0 || !winject::core::parse_host_port(rc_udp_console, &addr) ||
         bind(fd, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr)) != 0) {
         printf("GROUND_RC_BRIDGE cannot bind %s\n", rc_udp_console);
         if (fd >= 0) close(fd);
@@ -278,8 +281,8 @@ void start_rc_bridge() {
 }
 
 void start_radio_queues() {
-    radio_tx = std::make_shared<winject::ReactiveLossyQueue>();
-    radio_rx = std::make_shared<winject::ReactiveLossyQueue>();
+    radio_tx = std::make_shared<winject::core::ReactiveLossyQueue>();
+    radio_rx = std::make_shared<winject::core::ReactiveLossyQueue>();
     radio_tx->set_capacity(256);
     radio_rx->set_capacity(256);
     radio_reactor = std::make_shared<bfc::cv_reactor<>>();
@@ -398,92 +401,92 @@ static void *l3_main(void *)
     cfg.radio_device.dplane_tx = radio_tx_name;
     cfg.radio_device.dplane_rx = radio_rx_name;
     cfg.radio_device.reactor = radio_reactor_name;
-    cfg.radio_device.fcs = winject::RadioFcsConfig::signal;
+    cfg.radio_device.fcs = winject::core::RadioFcsConfig::signal;
     // Reachable over Ethernet for lur/lut during tests; no authentication.
     cfg.console_in = "0.0.0.0:2400";
-    winject::UpstreamConfig synch;
+    winject::core::UpstreamConfig synch;
     synch.index = 0; // Rover upstream 0 with the buses swapped.
-    synch.mode = winject::UpstreamMode::queue;
+    synch.mode = winject::core::UpstreamMode::queue;
     synch.bus_tx = 0xa1;
     synch.bus_rx = 0xb2;
     synch.endpoint.rx = synch_up.names.to_l3;
     synch.endpoint.tx = synch_up.names.from_l3;
     synch.reactor = radio_reactor_name;
     synch.scheduler_budget = 256;
-    synch.fec_type = winject::FecType::none; // A lost exchange is a timeout.
+    synch.fec_type = winject::core::FecType::none; // A lost exchange is a timeout.
     cfg.upstreams.push_back(synch);
-    winject::UpstreamConfig video;
+    winject::core::UpstreamConfig video;
     video.index = 1; // USB ID is independently 0.
-    video.mode = winject::UpstreamMode::queue;
+    video.mode = winject::core::UpstreamMode::queue;
     video.bus_tx = 0xd4;
     video.bus_rx = 0xc3;
     video.rx_queue_capacity = 256;
     video.scheduler_budget = 4096;
-    video.fec_type = winject::FecType::none; // vstreamer FEC terminates at the P4 receiver.
+    video.fec_type = winject::core::FecType::none; // vstreamer FEC terminates at the P4 receiver.
     cfg.upstreams.push_back(video);
-    winject::UpstreamConfig bwtest;
+    winject::core::UpstreamConfig bwtest;
     bwtest.index = 2; // Rover upstream 2 with the buses swapped.
-    bwtest.mode = winject::UpstreamMode::queue;
+    bwtest.mode = winject::core::UpstreamMode::queue;
     bwtest.bus_tx = 0xe5;
     bwtest.bus_rx = 0xf6;
     bwtest.endpoint.rx = bwtest_up.names.to_l3;
     bwtest.endpoint.tx = bwtest_up.names.from_l3;
     bwtest.reactor = radio_reactor_name;
     bwtest.scheduler_budget = 4096;
-    bwtest.fec_type = winject::FecType::none; // Clean loss counts.
+    bwtest.fec_type = winject::core::FecType::none; // Clean loss counts.
     cfg.upstreams.push_back(bwtest);
-    winject::UpstreamConfig rover_rc;
+    winject::core::UpstreamConfig rover_rc;
     rover_rc.index = 3; // Rover upstream 3 (rover_sample) with the buses swapped.
-    rover_rc.mode = winject::UpstreamMode::queue;
+    rover_rc.mode = winject::core::UpstreamMode::queue;
     rover_rc.bus_tx = 0x28;
     rover_rc.bus_rx = 0x17;
     rover_rc.endpoint.rx = rc_up_queues.names.to_l3;
     rover_rc.endpoint.tx = rc_up_queues.names.from_l3;
     rover_rc.reactor = radio_reactor_name;
     rover_rc.scheduler_budget = 256;
-    rover_rc.fec_type = winject::FecType::none; // RC repeats at 50 Hz; FEC only adds latency.
+    rover_rc.fec_type = winject::core::FecType::none; // RC repeats at 50 Hz; FEC only adds latency.
     cfg.upstreams.push_back(rover_rc);
     // Upstream 4: the rover's L3 m-plane. UDP server mode: an operator sends
     // console requests to 2410 and gets the rover's replies back on the same
     // socket. Replies go to the last sender, so one operator at a time.
     // Buses are the rover's (tx 6a / rx a6) with the ends swapped.
-    winject::UpstreamConfig rover_mplane;
+    winject::core::UpstreamConfig rover_mplane;
     rover_mplane.index = 4;
-    rover_mplane.mode = winject::UpstreamMode::udp_server;
+    rover_mplane.mode = winject::core::UpstreamMode::udp_server;
     rover_mplane.endpoint.rx = "0.0.0.0:2410";
     rover_mplane.bus_tx = 0xa6;
     rover_mplane.bus_rx = 0x6a;
     rover_mplane.rx_queue_capacity = 16;
     rover_mplane.scheduler_budget = 256;
-    rover_mplane.fec_type = winject::FecType::none;
+    rover_mplane.fec_type = winject::core::FecType::none;
     cfg.upstreams.push_back(rover_mplane);
     // Upstream 5: the rover C6 radio m-plane. The rover's static UDP upstream
     // forwards this to its local proxy on port 22. That proxy routes replies
     // per request tag, so the rover's local L3 can use port 22 at the same
     // time. There is no authentication; radio control and reset are exposed.
-    winject::UpstreamConfig rover_radio_mplane;
+    winject::core::UpstreamConfig rover_radio_mplane;
     rover_radio_mplane.index = 5;
-    rover_radio_mplane.mode = winject::UpstreamMode::udp_server;
+    rover_radio_mplane.mode = winject::core::UpstreamMode::udp_server;
     rover_radio_mplane.endpoint.rx = "0.0.0.0:2420";
     rover_radio_mplane.bus_tx = 0xc7;
     rover_radio_mplane.bus_rx = 0x7c;
     rover_radio_mplane.rx_queue_capacity = 16;
     rover_radio_mplane.scheduler_budget = 256;
-    rover_radio_mplane.fec_type = winject::FecType::none;
+    rover_radio_mplane.fec_type = winject::core::FecType::none;
     cfg.upstreams.push_back(rover_radio_mplane);
     // Upstream 6: the rover vstreamer m-plane. This board's receiver m-plane
     // already owns UDP 5090, so an operator uses 5092 for the rover. The
     // rover's static UDP upstream forwards requests to its local port 5090.
     // There is no authentication; video settings are exposed over the air.
-    winject::UpstreamConfig rover_video_mplane;
+    winject::core::UpstreamConfig rover_video_mplane;
     rover_video_mplane.index = 6;
-    rover_video_mplane.mode = winject::UpstreamMode::udp_server;
+    rover_video_mplane.mode = winject::core::UpstreamMode::udp_server;
     rover_video_mplane.endpoint.rx = "0.0.0.0:5092";
     rover_video_mplane.bus_tx = 0xd8;
     rover_video_mplane.bus_rx = 0x8d;
     rover_video_mplane.rx_queue_capacity = 16;
     rover_video_mplane.scheduler_budget = 256;
-    rover_video_mplane.fec_type = winject::FecType::none;
+    rover_video_mplane.fec_type = winject::core::FecType::none;
     cfg.upstreams.push_back(rover_video_mplane);
     // Upstreams 7-9, like 4-6: UDP servers that reply to the last sender, one
     // operator at a time. 7 and 8 are the rover tester's and clock-sync
@@ -499,18 +502,18 @@ static void *l3_main(void *)
     for (const auto &m : {rover_mplane_s{7, "0.0.0.0:5102", 0xb4, 0x4b, 16, 256},
                           rover_mplane_s{8, "0.0.0.0:5112", 0xc5, 0x5c, 16, 256},
                           rover_mplane_s{9, "0.0.0.0:2430", 0xe9, 0x9e, 64, 4096}}) {
-        winject::UpstreamConfig u;
+        winject::core::UpstreamConfig u;
         u.index = m.index;
-        u.mode = winject::UpstreamMode::udp_server;
+        u.mode = winject::core::UpstreamMode::udp_server;
         u.endpoint.rx = m.rx;
         u.bus_tx = m.bus_tx;
         u.bus_rx = m.bus_rx;
         u.rx_queue_capacity = m.queue;
         u.scheduler_budget = m.budget;
-        u.fec_type = winject::FecType::none;
+        u.fec_type = winject::core::FecType::none;
         cfg.upstreams.push_back(u);
     }
-    cfg.on_upstream_queue = [](size_t index, std::shared_ptr<winject::UpstreamQueue> up)
+    cfg.on_upstream_queue = [](size_t index, std::shared_ptr<winject::core::UpstreamQueue> up)
     {
         if (index == 1)
         {
@@ -523,11 +526,66 @@ static void *l3_main(void *)
     // that reactor drains every upstream's RX queue. With the default pthread
     // config it ran at priority 5 under ground_radio (14), and at 10 Mbit/s
     // the video RX queue evicted ~10% of frames, which L3 counts as air gaps.
-    auto upstream_cfg = esp_pthread_get_default_config();
-    upstream_cfg.prio = 14;
-    upstream_cfg.thread_name = "l3_upstream";
-    ESP_ERROR_CHECK(esp_pthread_set_cfg(&upstream_cfg));
-    int rc = winject_l3::main(cfg);
+    // l3's UDP console: a reactor of its own, named for console::Service.
+    auto console_reactor = std::make_shared<winject::l3::console::Reactor>();
+    winject::l3::console::ReactorRegistry::get_instance().add("l3-console",
+                                                             console_reactor);
+    {
+        esp_pthread_cfg_t c = esp_pthread_get_default_config();
+        c.stack_size = 6 * 1024;
+        c.thread_name = "l3_console";
+        esp_pthread_set_cfg(&c);
+    }
+    // A stop() before run() set the reactor running would be lost, and the
+    // join below would never return: wait until it runs.
+    std::promise<void> console_running;
+    auto console_is_running = console_running.get_future();
+    console_reactor->wake_up(
+        [&console_running]()
+        {
+            console_running.set_value();
+        });
+    std::thread console_thread(
+        [console_reactor]()
+        {
+            console_reactor->run();
+        });
+    console_is_running.wait();
+    winject::l3::console::Service console;
+    auto started = [&](const winject::L3& l3)
+    {
+        if (!cfg.console_in.empty())
+        {
+            const winject::Status s =
+                console.start(l3, cfg.console_in, "l3-console");
+            if (!s.ok())
+            {
+                printf("L3_CONSOLE_FAILED %s\n", s.error.c_str());
+            }
+        }
+    };
+    int rc = winject::L3::run(
+        cfg, started,
+        [](winject::L3::Thread t)
+        {
+            auto c = esp_pthread_get_default_config();
+            if (t == winject::L3::Thread::upstream)
+            {
+                c.prio = 14;
+                c.thread_name = "l3_upstream";
+            }
+            else
+            {
+                // l3's reactor: as the ground_l3 task it replaced.
+                c.stack_size = 32768;
+                c.prio = 12;
+                c.thread_name = "l3_reactor";
+            }
+            ESP_ERROR_CHECK(esp_pthread_set_cfg(&c));
+        });
+    console.stop();
+    console_reactor->stop();
+    console_thread.join();
     printf("GROUND_L3_EXIT rc=%d\n", rc);
     return nullptr;
 }
@@ -558,7 +616,7 @@ extern "C" void app_main(void)
     using queues = bfc::cv_reactor_circular_lossy_queue_registry<bfc::shared_sized_buffer>;
     for (const app_upstream *u : {&synch_up, &bwtest_up, &rc_up_queues}) {
         for (const std::string *name : {&u->names.to_l3, &u->names.from_l3}) {
-            auto q = std::make_shared<winject::ReactiveLossyQueue>();
+            auto q = std::make_shared<winject::core::ReactiveLossyQueue>();
             q->set_capacity(u->capacity);
             ESP_ERROR_CHECK(queues::get_instance().add(*name, q) ? ESP_OK : ESP_FAIL);
         }
