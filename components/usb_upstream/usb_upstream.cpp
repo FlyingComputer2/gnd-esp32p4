@@ -26,7 +26,7 @@ struct Channel
 {
     uint16_t id = 0, mtu = 1445, tx_credit = 0, rx_credit = 0, pending_credit = 0, window = 0;
     std::string name;
-    std::shared_ptr<winject::UpstreamQueue> upstream;
+    std::shared_ptr<winject::core::UpstreamQueue> upstream;
     UsbPacketSource source;
     UsbPacketSink sink;
     std::function<bool()> source_connected;
@@ -579,7 +579,7 @@ extern "C" bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage,
 }
 #endif
 esp_err_t usb_upstream_register(uint16_t id, const char *name,
-                                std::shared_ptr<winject::UpstreamQueue> up, uint16_t mtu)
+                                std::shared_ptr<winject::core::UpstreamQueue> up, uint16_t mtu)
 {
     std::lock_guard<std::mutex> lock(io);
     if (!up || !name || strlen(name) > 31 || !mtu || mtu > 1445 || count == channels.size())

@@ -8,7 +8,7 @@ endif()
 include(FetchContent)
 FetchContent_Declare(winject_l3
     GIT_REPOSITORY https://github.com/winject-wireless/winject-l3.git
-    GIT_TAG cb6445624de4ec7f531c3834f0a262a56b6c2100
+    GIT_TAG 0051f311113700a95f5064f2ff9265772f0fb801
 )
 FetchContent_GetProperties(winject_l3)
 if(NOT winject_l3_POPULATED)

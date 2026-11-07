@@ -62,18 +62,18 @@ int main()
             assert(n == 1);
         }
     }
-    using Queue = winject::ReactiveLossyQueue;
+    using Queue = winject::core::ReactiveLossyQueue;
     auto in = std::make_shared<Queue>(), out = std::make_shared<Queue>();
     in->set_capacity(8);
     out->set_capacity(8);
-    auto backend = std::make_shared<winject::UpstreamQueue>(in, out);
+    auto backend = std::make_shared<winject::core::UpstreamQueue>(in, out);
     assert(usb_upstream_register(0, "video", backend) == ESP_OK);
     assert(usb_upstream_register(0, "duplicate", backend) != ESP_OK);
     assert(usb_upstream_register(1, "same transport", backend) != ESP_OK);
     auto in2 = std::make_shared<Queue>(), out2 = std::make_shared<Queue>();
     in2->set_capacity(8);
     out2->set_capacity(8);
-    auto telemetry = std::make_shared<winject::UpstreamQueue>(in2, out2);
+    auto telemetry = std::make_shared<winject::core::UpstreamQueue>(in2, out2);
     assert(usb_upstream_register(65535, "test-telemetry", telemetry) == ESP_OK);
     reset(123);
     auto greeting = command(1, "{\"op\":\"hello\",\"version\":2}");
