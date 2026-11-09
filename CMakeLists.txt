@@ -6,28 +6,29 @@ if(NOT DEFINED PROJECT_VER)
 endif()
 
 include(FetchContent)
+# One bfc for the whole firmware: the dependencies share its queue and reactor
+# registries. BFC_PIN is checked against each dependency's own pin
+# (BfcFetch.cmake), and BFC_CONFIG_DIR holds this firmware's bfc_config.hpp
+# (function type, allocator, poll reactor), which every bfc user compiles with.
+set(BFC_PIN 3d68f8e61ef933718a51f248c76be8894d0cb491)
+set(BFC_CONFIG_DIR ${CMAKE_CURRENT_LIST_DIR}/bfc_config)
+FetchContent_Declare(bfc
+    GIT_REPOSITORY https://github.com/therooftopprinz/BFC.git
+    GIT_TAG ${BFC_PIN}
+)
 FetchContent_Declare(winject_l3
     GIT_REPOSITORY https://github.com/winject-wireless/winject-l3.git
-    GIT_TAG 8721994192ca49a4772b29ed7c39ee4691c5cae8
+    GIT_TAG a047ed8059ca7354e8c89fea04ba875d801204f9
 )
 FetchContent_GetProperties(winject_l3)
 if(NOT winject_l3_POPULATED)
     FetchContent_Populate(winject_l3)
 endif()
-# The shared BFC pin, declared before winject-l3's BfcFetch.cmake and the
-# proxy's (FetchContent keeps the first declaration), ahead of their pins
-# (f6fe978): it has removals
-# that fit fixed-size reactor callbacks and default_reactor<> on
-# large_function, and serves reactive queues (the applets use both).
-FetchContent_Declare(bfc
-    GIT_REPOSITORY https://github.com/therooftopprinz/BFC.git
-    GIT_TAG 1f732b19927dbe2c7092b2c93181ff21042d0781
-)
 include(${winject_l3_SOURCE_DIR}/src/BfcFetch.cmake)
 
 FetchContent_Declare(winject_sdio_proxy
     GIT_REPOSITORY https://github.com/winject-wireless/winject-radio-esp32-sdio-proxy.git
-    GIT_TAG 5cedf2ec1a1649bada5b39500a264a7d478a9dbd
+    GIT_TAG 83ab05890a9564698ae136490f2abc2c6167234a
 )
 FetchContent_GetProperties(winject_sdio_proxy)
 if(NOT winject_sdio_proxy_POPULATED)
@@ -37,7 +38,7 @@ include(${winject_sdio_proxy_SOURCE_DIR}/cmake/winject_sdio_proxy.cmake)
 
 FetchContent_Declare(vstreamer
     GIT_REPOSITORY https://github.com/FlyingComputer2/vstreamer.git
-    GIT_TAG dd13113f6386458d20085ef633174e60f8b89ad0)
+    GIT_TAG 0253187fdaee9e5e5ab7a47a40b0f13aedf0bcb2)
 FetchContent_GetProperties(vstreamer)
 if(NOT vstreamer_POPULATED)
     FetchContent_Populate(vstreamer)
