@@ -41,7 +41,7 @@ Normal C6 firmware is unchanged. Connect Android in USB host/OTG mode to the
 board's **High Speed USB (USB3)** port; use CH340 for flash and logs.
 
 L3 uses the local SDIO proxy through in-process radio queues; management uses loopback UDP 22. Domain 0xB00B,
-channel 1, OFDM_24M, 15 dBm. Upstreams (buses follow the flow, not the index):
+channel 1, OFDM_24M, 20 dBm. Upstreams (buses follow the flow, not the index):
 
 | id | Stream | Buses (tx / rx) | FEC |
 |----|--------|-----------------|-----|

@@ -390,7 +390,7 @@ static void *l3_main(void *)
     winject::Config cfg;
     cfg.channel = 1;
     cfg.modulation = "OFDM_24M";
-    cfg.power_dbm = 15;
+    cfg.power_dbm = 20;  // asks for the C6 maximum (driver 88, ~13.6 dBm on OFDM_24M)
     cfg.domain = 0xB00B;
     cfg.stats_sec = 10;
     cfg.radio_device.mplane.sin_family = AF_INET;
