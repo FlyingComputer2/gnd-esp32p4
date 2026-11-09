@@ -45,7 +45,6 @@
 #include <memory>
 #include <mutex>
 #include <sys/socket.h>
-#include <future>
 #include <thread>
 #include "utils/NetUtil.h"
 
@@ -522,70 +521,29 @@ static void *l3_main(void *)
             printf("GROUND_READY usb=v2 video=0 msp_displayport=1:tba msp_rc_telemetry=2 sync=3\n");
         }
     };
-    // winject-l3 starts its upstream reactor with std::thread from this thread;
-    // that reactor drains every upstream's RX queue. With the default pthread
-    // config it ran at priority 5 under ground_radio (14), and at 10 Mbit/s
-    // the video RX queue evicted ~10% of frames, which L3 counts as air gaps.
-    // l3's UDP console: a reactor of its own, named for console::Service.
-    auto console_reactor = std::make_shared<winject::l3::console::Reactor>();
-    winject::l3::console::ReactorRegistry::get_instance().add("l3-console",
-                                                             console_reactor);
-    {
-        esp_pthread_cfg_t c = esp_pthread_get_default_config();
-        c.stack_size = 6 * 1024;
-        c.thread_name = "l3_console";
-        esp_pthread_set_cfg(&c);
-    }
-    // A stop() before run() set the reactor running would be lost, and the
-    // join below would never return: wait until it runs.
-    std::promise<void> console_running;
-    auto console_is_running = console_running.get_future();
-    console_reactor->wake_up(
-        [&console_running]()
-        {
-            console_running.set_value();
-        });
-    std::thread console_thread(
-        [console_reactor]()
-        {
-            console_reactor->run();
-        });
-    console_is_running.wait();
+    // l3's UDP console, on the app reactor like l3 itself.
     winject::l3::console::Service console;
     auto started = [&](const winject::L3& l3)
     {
         if (!cfg.console_in.empty())
         {
             const winject::Status s =
-                console.start(l3, cfg.console_in, "l3-console");
+                console.start(l3, cfg.console_in, apps_reactor_name);
             if (!s.ok())
             {
                 printf("L3_CONSOLE_FAILED %s\n", s.error.c_str());
             }
         }
     };
-    int rc = winject::L3::run(
-        cfg, started,
-        [](winject::L3::Thread t)
-        {
-            auto c = esp_pthread_get_default_config();
-            if (t == winject::L3::Thread::upstream)
-            {
-                c.prio = 14;
-                c.thread_name = "l3_upstream";
-            }
-            else
-            {
-                // l3's reactor: as the ground_l3 task it replaced.
-                c.stack_size = 32768;
-                c.prio = 12;
-                c.thread_name = "l3_reactor";
-            }
-            ESP_ERROR_CHECK(esp_pthread_set_cfg(&c));
-        });
+    // No threads of l3's own: its reactor, timers and console run on the app
+    // reactor ("apps", core 1, priority 12), and its upstream data path on the
+    // ground radio reactor ("ground-radio", core 0, priority 14, where the
+    // radio queues it serves live). At the default priority 5 the upstream
+    // reactor evicted ~10% of the video RX queue at 10 Mbit/s, counted as air
+    // gaps: whatever runs it must stay at 14.
+    const int rc = winject::L3::run(cfg, started, {},
+                                    winject::L3::Reactors{apps_reactor_name, radio_reactor_name});
     console.stop();
-    console_reactor->stop();
-    console_thread.join();
     printf("GROUND_L3_EXIT rc=%d\n", rc);
     return nullptr;
 }
@@ -655,10 +613,15 @@ extern "C" void app_main(void)
         printf("GROUND_FAILED err=0x%x\n", err);
         return;
     }
+    // The thread L3::run blocks on and runs l3's callbacks (apply, started,
+    // Done, posts) on. Pinned like the app reactor: unpinned, the RISC-V port
+    // pins a task to the core it first uses the FPU on.
     auto pthread_cfg = esp_pthread_get_default_config();
-    pthread_cfg.stack_size = 32768;
+    pthread_cfg.stack_size = 16 * 1024;
     pthread_cfg.prio = 12;
+    pthread_cfg.pin_to_core = 1;
     pthread_cfg.thread_name = "ground_l3";
+    pthread_cfg.stack_alloc_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
     ESP_ERROR_CHECK(esp_pthread_set_cfg(&pthread_cfg));
     pthread_t l3;
     if (pthread_create(&l3, nullptr, l3_main, nullptr) != 0)
