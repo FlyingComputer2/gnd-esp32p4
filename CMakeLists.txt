@@ -61,9 +61,20 @@ if(NOT krono_POPULATED)
     FetchContent_Populate(krono)
 endif()
 
+# The system applet (get sys cpu / heap / stack / ...; console 5130). It uses
+# this firmware's bfc and pins none.
+FetchContent_Declare(sys_applet
+    GIT_REPOSITORY https://github.com/FlyingComputer2/sys-applet-esp32p4.git
+    GIT_TAG e5ec5087e856d69979ec42e52c65bd820bd670fe)
+FetchContent_GetProperties(sys_applet)
+if(NOT sys_applet_POPULATED)
+    FetchContent_Populate(sys_applet)
+endif()
+
 set(EXTRA_COMPONENT_DIRS ${WINJECT_SDIO_PROXY_COMPONENT_DIRS}
                          ${winject_l3_SOURCE_DIR}/idf/winject_l3
                          ${winject_l3_SOURCE_DIR}/idf/app_bwtest
-                         ${krono_SOURCE_DIR}/idf/krono)
+                         ${krono_SOURCE_DIR}/idf/krono
+                         ${sys_applet_SOURCE_DIR}/idf/sys_applet)
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(gnd-esp32p4)

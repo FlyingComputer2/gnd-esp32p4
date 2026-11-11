@@ -4,7 +4,8 @@
 // telemetry (bridged, see below), 4 rover L3 m-plane (UDP 2410), 5 rover C6
 // m-plane (UDP 2420), 6 rover vstreamer m-plane (UDP 5092), 7 rover tester
 // m-plane (UDP 5102), 8 rover clock-sync m-plane (UDP 5112), 9 rover udp_ota
-// (app, C6 and config files, UDP 2430). 4-9 are udp_server upstreams: replies
+// (app, C6 and config files, UDP 2430), 10 rover system m-plane (get sys
+// cpu / heap / stack, UDP 5132). 4-10 are udp_server upstreams: replies
 // go to the last sender, one operator at a time. Buses as on the rover, swapped:
 // sync a1/b2, video d4/c3, tester e5/f6, rover_sample 28/17, L3 m-plane
 // a6/6a, C6 m-plane c7/7c, vstreamer m-plane d8/8d, tester console b4/4b,
@@ -31,6 +32,7 @@
 #include "esp_sntp.h"
 #include "esp_pthread.h"
 #include "applets.hpp"
+#include "sys_applet/applet.hpp"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
@@ -65,35 +67,11 @@ constexpr const char *radio_reactor_name = "ground-radio";
 std::shared_ptr<winject::core::ReactiveLossyQueue> radio_tx, radio_rx;
 std::shared_ptr<bfc::cv_reactor<>> radio_reactor;
 void *run_radio_reactor(void *) { radio_reactor->run(); return nullptr; }
+// CPU share per task since the previous print (sys-applet-esp32p4's format:
+// name:core:prio:percent, busiest first).
 void print_cpu() {
-    struct Previous { TaskHandle_t task; uint32_t runtime; };
-    static std::vector<Previous> previous;
-    static int64_t previous_us = 0;
-    std::vector<TaskStatus_t> tasks(uxTaskGetNumberOfTasks() + 8);
-    configRUN_TIME_COUNTER_TYPE total = 0;
-    const auto count = uxTaskGetSystemState(tasks.data(), tasks.size(), &total);
-    const auto now = esp_timer_get_time();
-    const double delta = double(now - previous_us);
-    std::vector<Previous> next;
-    std::string line;
-    for (UBaseType_t i = 0; i < count; ++i) {
-        const auto &task = tasks[i];
-        const uint32_t runtime = task.ulRunTimeCounter;
-        next.push_back({task.xHandle, runtime});
-        if (!previous_us) continue;
-        for (const auto &old : previous) if (old.task == task.xHandle) {
-            const auto percent = 100.0 * uint32_t(runtime - old.runtime) / delta;
-            if (percent >= 0.5 || std::string(task.pcTaskName).find("IDLE") == 0) {
-                char entry[80];
-                snprintf(entry, sizeof(entry), " %s(p%u)=%.1f%%", task.pcTaskName,
-                         unsigned(task.uxCurrentPriority), percent);
-                line += entry;
-            }
-            break;
-        }
-    }
-    previous = std::move(next); previous_us = now;
-    printf("GROUND_CPU%s\n", line.c_str());
+    static sys_applet::cpu_window window;
+    printf("GROUND_CPU %s\n", window.line().c_str());
 }
 
 // The applets' upstreams: QUEUE_FORWARDING on named queues (L3's `rx` =
@@ -138,6 +116,14 @@ void start_applets() {
     sender.stack_alloc_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;  // no flash I/O
     bw.sender = sender;
     if (!bwtest.configure(bw) || !bwtest.start()) printf("GROUND_BWTEST_EXIT rc=1\n");
+
+    // This board's system queries (get sys cpu / heap / stack / ...) on UDP
+    // 5130; the rover's are relayed on 5132 (upstream 10).
+    static sys_applet::Applet sys;
+    sys_applet::config sy;
+    sy.reactor = apps_reactor_name;
+    sy.console = "0.0.0.0:5130";
+    if (!sys.configure(sy) || !sys.start()) printf("GROUND_SYS_EXIT rc=1\n");
 
     start_rc_bridge();
 }
@@ -500,7 +486,10 @@ static void *l3_main(void *)
     struct rover_mplane_s { size_t index; const char *rx; uint8_t bus_tx, bus_rx; size_t queue, budget; };
     for (const auto &m : {rover_mplane_s{7, "0.0.0.0:5102", 0xb4, 0x4b, 16, 256},
                           rover_mplane_s{8, "0.0.0.0:5112", 0xc5, 0x5c, 16, 256},
-                          rover_mplane_s{9, "0.0.0.0:2430", 0xe9, 0x9e, 64, 4096}}) {
+                          rover_mplane_s{9, "0.0.0.0:2430", 0xe9, 0x9e, 64, 4096},
+                          // 10: the rover's system applet (get sys cpu / heap / stack / ...);
+                          // its console is UDP 5130 on the rover, this board's relay 5132.
+                          rover_mplane_s{10, "0.0.0.0:5132", 0xf3, 0x3f, 16, 256}}) {
         winject::core::UpstreamConfig u;
         u.index = m.index;
         u.mode = winject::core::UpstreamMode::udp_server;

@@ -5,7 +5,6 @@
 #include "components/stream_receiver.hpp"
 #include "core/rs_encode_scalar.hpp"
 #include "vstreamer_idf/live_mplane.hpp"
-#include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -13,7 +12,6 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <algorithm>
-#include <map>
 #include <atomic>
 #include <cerrno>
 #include <cstdio>
@@ -83,82 +81,7 @@ private:
     sample last_{-1, -1};
     uint64_t rejected_ = 0;
 };
-// CPU share per FreeRTOS task since the previous query, busiest first:
-// "<name>:<core>:<prio>:<percent>" (core '-' = unpinned). Percent is of one core.
-std::string task_cpu_stats() {
-    static std::mutex mu;
-    static std::map<TaskHandle_t, uint32_t> last_counter; // names repeat
-    static uint32_t last_total = 0;
-    std::lock_guard<std::mutex> lock(mu);
-    std::vector<TaskStatus_t> tasks(uxTaskGetNumberOfTasks() + 4);
-    configRUN_TIME_COUNTER_TYPE total = 0;
-    tasks.resize(uxTaskGetSystemState(tasks.data(), tasks.size(), &total));
-    const uint32_t elapsed = uint32_t(total) - last_total;
-    last_total = uint32_t(total);
-    struct row { std::string name; int core; unsigned prio; float pct; };
-    std::vector<row> rows;
-    std::map<TaskHandle_t, uint32_t> counter;
-    for (const auto &t : tasks) {
-        const std::string name = t.pcTaskName;
-        const uint32_t now = uint32_t(t.ulRunTimeCounter);
-        const auto it = last_counter.find(t.xHandle);
-        const uint32_t delta = it == last_counter.end() ? now : now - it->second;
-        counter[t.xHandle] = now;
-        rows.push_back({name, int(xTaskGetCoreID(t.xHandle)), unsigned(t.uxCurrentPriority),
-            elapsed ? 100.f * float(delta) / float(elapsed) : 0.f});
-    }
-    last_counter.swap(counter);
-    std::sort(rows.begin(), rows.end(), [](const row &a, const row &b) { return a.pct > b.pct; });
-    std::string out = "window_ms=" + std::to_string(elapsed / 1000);
-    char buf[64];
-    for (const auto &r : rows) {
-        if (r.core == tskNO_AFFINITY) snprintf(buf, sizeof(buf), " %s:-:%u:%.1f", r.name.c_str(), r.prio, r.pct);
-        else snprintf(buf, sizeof(buf), " %s:%d:%u:%.1f", r.name.c_str(), r.core, r.prio, r.pct);
-        out += buf;
-    }
-    return out;
-}
-
-// Same numbers as the serial GROUND_HEAP line (bytes); serial open resets the ground.
-std::string heap_stats() {
-    char buf[160];
-    snprintf(buf, sizeof(buf), "internal=%u internal_largest=%u internal_min=%u psram=%u psram_largest=%u",
-             unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
-             unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
-             unsigned(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL)),
-             unsigned(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
-             unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)));
-    return buf;
-}
-
-// Where each task's stack lives and its low-water mark: "<task>@<region>:<base>/<free bytes>".
-// Region L2 (internal), PS (PSRAM), LP (slow LP SRAM), TCM or ?? (other). Same format as the
-// rover's `get sys stacks` (vstreamer live_tx.cpp).
-std::string stacks_stats() {
-    const UBaseType_t n = uxTaskGetNumberOfTasks();
-    auto *st = static_cast<TaskStatus_t *>(
-        heap_caps_malloc(sizeof(TaskStatus_t) * (n + 4), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (st == nullptr) return "ENOMEM";
-    uint32_t total = 0;
-    const UBaseType_t got = uxTaskGetSystemState(st, n + 4, &total);
-    std::string out = "tasks=" + std::to_string(got);
-    char b[96];
-    for (UBaseType_t i = 0; i < got; i++) {
-        const auto base = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(st[i].pxStackBase));
-        const char *where = "??";
-        if (base >= 0x50108000u && base < 0x50110000u) where = "LP";
-        else if (base >= 0x4ff00000u && base < 0x4ffc0000u) where = "L2";
-        else if (base >= 0x48000000u && base < 0x4c000000u) where = "PS";
-        else if (base >= 0x30100000u && base < 0x30102000u) where = "TCM";
-        snprintf(b, sizeof(b), " %s@%s:%x/%u", st[i].pcTaskName, where, unsigned(base),
-                 unsigned(st[i].usStackHighWaterMark));
-        out += b;
-    }
-    heap_caps_free(st);
-    return out;
-}
-
-latency_window rx_latency;    // at receiver output()
+latency_window rx_latency;     // at receiver output()
 latency_window mcast_latency;  // after a successful multicast sendto()
 latency_window usb_latency;    // when the USB service takes the packet from the fanout
 
@@ -367,9 +290,6 @@ esp_err_t ground_video_start(std::shared_ptr<winject::core::UpstreamQueue> up) {
     mplane.add_query("mcast", "latency_stats", [] { return mcast_latency.stats(false); });
     mplane.add_query("usb", "latency_stats", [] { return usb_latency.stats(false); });
     mplane.add_query("gnd", "stats", ground_video_stats);
-    mplane.add_query("gnd", "tasks", task_cpu_stats);
-    mplane.add_query("gnd", "heap", heap_stats);
-    mplane.add_query("gnd", "stacks", stacks_stats);
     mplane.add_query("usb", "prof", usb_upstream_profile);
     if (const int r = mplane.start(mplane_port, mplane_thread); r < 0)
         printf("GROUND_MPLANE bind :%d failed (%d)\n", mplane_port, r);
