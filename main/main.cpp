@@ -585,7 +585,9 @@ extern "C" void app_main(void)
         esp_pthread_cfg_t prev{};
         const bool had_prev = esp_pthread_get_cfg(&prev) == ESP_OK;
         auto cfg = esp_pthread_get_default_config();
-        cfg.stack_size = 6 * 1024;
+        // 16 KB as on the rover: l3's reactor, timers and console run here
+        // too (they had a 32 KB thread of their own before).
+        cfg.stack_size = 16 * 1024;
         cfg.prio = 12;
         cfg.thread_name = "apps";
         cfg.stack_alloc_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
