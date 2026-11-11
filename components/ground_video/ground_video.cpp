@@ -5,6 +5,7 @@
 #include "components/stream_receiver.hpp"
 #include "core/rs_encode_scalar.hpp"
 #include "vstreamer_idf/live_mplane.hpp"
+#include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -118,7 +119,46 @@ std::string task_cpu_stats() {
     return out;
 }
 
-latency_window rx_latency;     // at receiver output()
+// Same numbers as the serial GROUND_HEAP line (bytes); serial open resets the ground.
+std::string heap_stats() {
+    char buf[160];
+    snprintf(buf, sizeof(buf), "internal=%u internal_largest=%u internal_min=%u psram=%u psram_largest=%u",
+             unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+             unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+             unsigned(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL)),
+             unsigned(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
+             unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)));
+    return buf;
+}
+
+// Where each task's stack lives and its low-water mark: "<task>@<region>:<base>/<free bytes>".
+// Region L2 (internal), PS (PSRAM), LP (slow LP SRAM), TCM or ?? (other). Same format as the
+// rover's `get sys stacks` (vstreamer live_tx.cpp).
+std::string stacks_stats() {
+    const UBaseType_t n = uxTaskGetNumberOfTasks();
+    auto *st = static_cast<TaskStatus_t *>(
+        heap_caps_malloc(sizeof(TaskStatus_t) * (n + 4), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (st == nullptr) return "ENOMEM";
+    uint32_t total = 0;
+    const UBaseType_t got = uxTaskGetSystemState(st, n + 4, &total);
+    std::string out = "tasks=" + std::to_string(got);
+    char b[96];
+    for (UBaseType_t i = 0; i < got; i++) {
+        const auto base = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(st[i].pxStackBase));
+        const char *where = "??";
+        if (base >= 0x50108000u && base < 0x50110000u) where = "LP";
+        else if (base >= 0x4ff00000u && base < 0x4ffc0000u) where = "L2";
+        else if (base >= 0x48000000u && base < 0x4c000000u) where = "PS";
+        else if (base >= 0x30100000u && base < 0x30102000u) where = "TCM";
+        snprintf(b, sizeof(b), " %s@%s:%x/%u", st[i].pcTaskName, where, unsigned(base),
+                 unsigned(st[i].usStackHighWaterMark));
+        out += b;
+    }
+    heap_caps_free(st);
+    return out;
+}
+
+latency_window rx_latency;    // at receiver output()
 latency_window mcast_latency;  // after a successful multicast sendto()
 latency_window usb_latency;    // when the USB service takes the packet from the fanout
 
@@ -328,6 +368,8 @@ esp_err_t ground_video_start(std::shared_ptr<winject::core::UpstreamQueue> up) {
     mplane.add_query("usb", "latency_stats", [] { return usb_latency.stats(false); });
     mplane.add_query("gnd", "stats", ground_video_stats);
     mplane.add_query("gnd", "tasks", task_cpu_stats);
+    mplane.add_query("gnd", "heap", heap_stats);
+    mplane.add_query("gnd", "stacks", stacks_stats);
     mplane.add_query("usb", "prof", usb_upstream_profile);
     if (const int r = mplane.start(mplane_port, mplane_thread); r < 0)
         printf("GROUND_MPLANE bind :%d failed (%d)\n", mplane_port, r);
