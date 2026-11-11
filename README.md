@@ -118,13 +118,22 @@ extension against the ground's CLOCK_REALTIME, the sync reference):
 echo "get rcv latency_stats"   | nc -u -w1 <ground> 5090   # camera -> stream_receiver output(); node_* = time inside the receiver
 echo "get mcast latency_stats" | nc -u -w1 <ground> 5090   # camera -> after the multicast sendto()
 echo "get gnd stats"           | nc -u -w1 <ground> 5090   # GROUND_VIDEO counters and fanout queue depths
-echo "get gnd tasks"           | nc -u -w1 <ground> 5090   # CPU % of one core per task since the last query: name:core:prio:pct
 echo "get usb latency_stats"   | nc -u -w1 <ground> 5090   # camera -> the USB service takes the packet from the fanout
 echo "get usb prof"            | nc -u -w1 <ground> 5090   # USB service-loop time per section and counters since the last query
 ```
 
 The rover's vstreamer m-plane uses the same grammar through UDP 5092 on the
-ground P4, for example `echo "get sys stats" | nc -u -w1 <ground> 5092`.
+ground P4, for example `echo "get src fps" | nc -u -w1 <ground> 5092`.
+
+System queries ([sys-applet-esp32p4](https://github.com/FlyingComputer2/sys-applet-esp32p4)):
+this board's on UDP 5130, the rover's through UDP 5132 (upstream 10):
+
+```sh
+echo "get sys cpu"     | nc -u -w1 <ground> 5130   # CPU % of one core per task since the last cpu query: name:core:prio:pct
+echo "get sys heap"    | nc -u -w1 <ground> 5130   # internal / PSRAM free, low-water mark, largest block
+echo "get sys stack"   | nc -u -w1 <ground> 5132   # the rover's task stacks: task@region:base/free (LP = slow LP SRAM)
+echo "get sys keys"    | nc -u -w1 <ground> 5132   # cpu heap stack uptime reset version
+```
 
 `latency_stats` covers the AUs since the previous query; `get rcv latency_ms` and
 `get rcv node_latency_ms` give the last AU. Other `get|set rcv <key>` go to
