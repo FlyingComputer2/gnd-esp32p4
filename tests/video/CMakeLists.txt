@@ -3,9 +3,9 @@ project(ground_video_test LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 include(FetchContent)
 FetchContent_Declare(vstreamer GIT_REPOSITORY https://github.com/FlyingComputer2/vstreamer.git
-    GIT_TAG e4fd44853249b74113b76f4ff668d87c5b3b8deb)
+    GIT_TAG 0253187fdaee9e5e5ab7a47a40b0f13aedf0bcb2)
 FetchContent_Declare(bfc GIT_REPOSITORY https://github.com/therooftopprinz/BFC.git
-    GIT_TAG f6fe9784bb8379eaa72a1597fe9e9638b97fb5fe)
+    GIT_TAG 3d68f8e61ef933718a51f248c76be8894d0cb491)
 FetchContent_Declare(isa-l GIT_REPOSITORY https://github.com/intel/isa-l.git GIT_TAG v2.31.1 GIT_SHALLOW TRUE)
 foreach(dep vstreamer bfc isa-l)
     FetchContent_GetProperties(${dep})
@@ -23,7 +23,7 @@ string(REPLACE "k_queue_depth = 4096;" "k_queue_depth = 64;" rx_header "${rx_hea
 file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/generated/components/stream_receiver.hpp "${rx_header}")
 add_library(video_core ${VSTREAMER_SOURCES} ${isa-l_SOURCE_DIR}/erasure_code/ec_base.c)
 target_include_directories(video_core PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/generated
-    ${vstreamer_SOURCE_DIR}/src ${bfc_SOURCE_DIR}/src
+    ${vstreamer_SOURCE_DIR}/src ${bfc_SOURCE_DIR}/src ${CMAKE_CURRENT_LIST_DIR}/../../bfc_config
     PRIVATE ${isa-l_SOURCE_DIR}/include ${isa-l_SOURCE_DIR}/erasure_code)
 target_compile_definitions(video_core PRIVATE NDEBUG)
 add_executable(video_test video_test.cpp)

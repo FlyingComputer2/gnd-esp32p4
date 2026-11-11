@@ -50,6 +50,8 @@ CONFIG_VSTREAMER_RS_PIE=y
 CONFIG_WINJECT_PROXY_DPLANE_PSRAM=y
 CONFIG_VSTREAMER_RX_PSRAM=y
 
-# Allocations over 1 KB (packet buffers) go to PSRAM, as on the rover; at
-# 16 KB they filled internal RAM and lwIP could not allocate sockets or pbufs.
-CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=1024
+# Every malloc prefers PSRAM (falling back to internal), as on the rover. At
+# 16 KB packet buffers filled
+# internal RAM and lwIP could not allocate sockets or pbufs; 0 instead of 1024
+# frees another ~45-57 KB internal with no loss change at 10 Mbit/s (2026-11-10).
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=0

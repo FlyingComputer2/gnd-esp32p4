@@ -25,7 +25,7 @@ idf_component_register(SRCS "ground_video.cpp" ${VSTREAMER_SOURCES}
     ${VSTREAMER_ISAL_ROOT}/erasure_code/ec_base.c
     INCLUDE_DIRS "include" ${CMAKE_CURRENT_BINARY_DIR}/generated ${rx_root}/src
                  ${rx_root}/idf/vstreamer/include
-                 ${bfc_SOURCE_DIR}/src
+                 ${bfc_SOURCE_DIR}/src ${BFC_CONFIG_DIR}
     PRIV_INCLUDE_DIRS ${rx_root}/idf/vstreamer/compat ${VSTREAMER_ISAL_ROOT}/include ${VSTREAMER_ISAL_ROOT}/erasure_code
     REQUIRES usb_upstream lwip pthread
     PRIV_REQUIRES esp_timer)

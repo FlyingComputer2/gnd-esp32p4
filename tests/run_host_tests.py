@@ -20,7 +20,7 @@ flags = ['-fsanitize=address,undefined', '-g'] if a.sanitize else []
 with tempfile.TemporaryDirectory(prefix='rover-usb-test-') as directory:
     work = Path(directory)
     subprocess.run(['cc', *flags, '-c', str(cjson / 'cJSON.c'), '-I', str(cjson), '-o', str(work / 'json.o')], check=True)
-    includes = [root / 'tests/stubs', root / 'components/usb_upstream/include', a.l3 / 'src/manager', a.l3 / 'src/core', a.bfc / 'src', cjson]
+    includes = [root / 'tests/stubs', root / 'components/usb_upstream/include', a.l3 / 'src/manager', a.l3 / 'src/core', a.bfc / 'src', root / 'bfc_config', cjson]
     command = ['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-Wno-unused-function', '-Wno-unused-variable', *flags]
     for path in includes:
         command += ['-I', str(path.resolve())]
