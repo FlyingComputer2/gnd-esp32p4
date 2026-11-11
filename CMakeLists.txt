@@ -38,7 +38,7 @@ include(${winject_sdio_proxy_SOURCE_DIR}/cmake/winject_sdio_proxy.cmake)
 
 FetchContent_Declare(vstreamer
     GIT_REPOSITORY https://github.com/FlyingComputer2/vstreamer.git
-    GIT_TAG 0253187fdaee9e5e5ab7a47a40b0f13aedf0bcb2)
+    GIT_TAG 0b8f9df47cf35bb3b0fe78ac863d81b3f845ef4b)
 FetchContent_GetProperties(vstreamer)
 if(NOT vstreamer_POPULATED)
     FetchContent_Populate(vstreamer)
