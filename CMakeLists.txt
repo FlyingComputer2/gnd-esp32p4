@@ -65,7 +65,7 @@ endif()
 # this firmware's bfc and pins none.
 FetchContent_Declare(sys_applet
     GIT_REPOSITORY https://github.com/FlyingComputer2/sys-applet-esp32p4.git
-    GIT_TAG e5ec5087e856d69979ec42e52c65bd820bd670fe)
+    GIT_TAG 00c16e1fe60f359a7f25eb68839de60d2fa16f65)
 FetchContent_GetProperties(sys_applet)
 if(NOT sys_applet_POPULATED)
     FetchContent_Populate(sys_applet)
