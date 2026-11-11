@@ -23,7 +23,7 @@ string(REPLACE "k_queue_depth = 4096;" "k_queue_depth = 64;" rx_header "${rx_hea
 file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/generated/components/stream_receiver.hpp "${rx_header}")
 add_library(video_core ${VSTREAMER_SOURCES} ${isa-l_SOURCE_DIR}/erasure_code/ec_base.c)
 target_include_directories(video_core PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/generated
-    ${vstreamer_SOURCE_DIR}/src ${bfc_SOURCE_DIR}/src
+    ${vstreamer_SOURCE_DIR}/src ${bfc_SOURCE_DIR}/src ${CMAKE_CURRENT_LIST_DIR}/../../bfc_config
     PRIVATE ${isa-l_SOURCE_DIR}/include ${isa-l_SOURCE_DIR}/erasure_code)
 target_compile_definitions(video_core PRIVATE NDEBUG)
 add_executable(video_test video_test.cpp)
