@@ -33,6 +33,7 @@
 #include "esp_pthread.h"
 #include "applets.hpp"
 #include "sys_applet/applet.hpp"
+#include "sys_applet/queries.hpp"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
