@@ -21,6 +21,10 @@
 #include "apps/bwtest/Bwtest.h"
 #include "synch/SynchGpio.h"
 #include "esp_eth.h"
+#include "esp_idf_version.h"
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+#include "esp_eth_phy_ip101.h"
+#endif
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include <vector>

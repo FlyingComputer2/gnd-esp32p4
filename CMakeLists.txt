@@ -18,7 +18,7 @@ FetchContent_Declare(bfc
 )
 FetchContent_Declare(winject_l3
     GIT_REPOSITORY https://github.com/winject-wireless/winject-l3.git
-    GIT_TAG fcf54c901ac843612aced874ac5a715737632d74
+    GIT_TAG 4255053470eb485356b9623e578ecd384165a03a
 )
 FetchContent_GetProperties(winject_l3)
 if(NOT winject_l3_POPULATED)
@@ -38,14 +38,14 @@ include(${winject_sdio_proxy_SOURCE_DIR}/cmake/winject_sdio_proxy.cmake)
 
 FetchContent_Declare(vstreamer
     GIT_REPOSITORY https://github.com/FlyingComputer2/vstreamer.git
-    GIT_TAG 00b5e53a0443456c8836e3282c3fa809f2b005e4)
+    GIT_TAG aa8caeff1b2fb61a70831137c2cbc1965dac0d08)
 FetchContent_GetProperties(vstreamer)
 if(NOT vstreamer_POPULATED)
     FetchContent_Populate(vstreamer)
 endif()
 # Receive-only integration: no camera, hardware encoder, SDL or TX pipeline.
 FetchContent_Declare(isa-l GIT_REPOSITORY https://github.com/intel/isa-l.git
-    GIT_TAG v2.31.1 GIT_SHALLOW TRUE)
+    GIT_TAG 41a840a784040dc68b5363c0a6280e796382b707)
 FetchContent_GetProperties(isa-l)
 if(NOT isa-l_POPULATED)
     FetchContent_Populate(isa-l)

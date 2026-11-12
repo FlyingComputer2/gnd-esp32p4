@@ -25,10 +25,10 @@ by record kind and never routed as channel-0 video. See the [wire/API specificat
 
 ## Build and flash
 
-ESP-IDF v5.5.5:
+Build with ESP-IDF at the commit recorded in `IDF_COMMIT` (6.2 development). The tracked `dependencies.lock` fixes the managed component versions. Install the ESP32-P4 tools and source that checkout:
 
 ```sh
-. ~/esp/esp-idf-v5.5.5/export.sh
+. /path/to/esp-idf/export.sh
 idf.py set-target esp32p4
 idf.py build
 idf.py -p /dev/ttyUSB0 flash monitor
