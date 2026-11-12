@@ -121,6 +121,31 @@ void start_applets() {
     // This board's system queries (get sys cpu / heap / stack / ...) on UDP
     // 5130; the rover's are relayed on 5132 (upstream 10).
     static sys_applet::Applet sys;
+    // `get sys proxy`: the SDIO proxy's d-plane and link counters (since boot),
+    // the same numbers as GROUND_PROXY_STATS on serial, plus the radio RX
+    // queue's current depth. Tells SDIO parse loss (link_rx_bad / link_rx_err)
+    // from frames the full radio RX queue evicted (dup_evict).
+    sys.add_query("proxy", [] {
+        winject_proxy_stats_t ps;
+        sdio_link_host_stats_t ls;
+        winject_proxy_get_stats(&ps);
+        sdio_link_host_get_stats(&ls);
+        char b[512];
+        std::snprintf(b, sizeof(b),
+                      "mreq=%" PRIu32 " mrep=%" PRIu32 " mdrop=%" PRIu32 " ddown=%" PRIu32
+                      " ddown_drop=%" PRIu32 " dup=%" PRIu32 " dup_nopeer=%" PRIu32 " dup_fail=%" PRIu32
+                      " dup_evict=%" PRIu32 " link_rx_msgs=%" PRIu32 " link_rx_reads=%" PRIu32
+                      " link_rx_bad=%" PRIu32 " link_rx_err=%" PRIu32 " link_tx_msgs=%" PRIu32
+                      " link_tx_err=%" PRIu32 " link_tx_credit_waits=%" PRIu32 " link_downs=%" PRIu32
+                      " link_ups=%" PRIu32 " radio_rx_depth=%zu radio_rx_capacity=%zu",
+                      ps.mplane_requests, ps.mplane_replies, ps.mplane_dropped, ps.dplane_down,
+                      ps.dplane_down_dropped, ps.dplane_up, ps.dplane_up_no_peer, ps.dplane_up_failed,
+                      ps.dplane_up_evicted, ls.rx_msgs, ls.rx_reads, ls.rx_bad, ls.rx_errors,
+                      ls.tx_msgs, ls.tx_errors, ls.tx_credit_waits, ls.link_downs, ls.link_ups,
+                      radio_rx ? radio_rx->size() : size_t(0),
+                      radio_rx ? radio_rx->capacity() : size_t(0));
+        return std::string(b);
+    });
     sys_applet::config sy;
     sy.reactor = apps_reactor_name;
     sy.console = "0.0.0.0:5130";
