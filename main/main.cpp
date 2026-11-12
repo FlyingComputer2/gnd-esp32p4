@@ -624,6 +624,10 @@ extern "C" void app_main(void)
     cfg.dplane_tx_queue = radio_tx_name;
     cfg.dplane_rx_queue = radio_rx_name;
     cfg.dplane_reactor = radio_reactor_name;
+    // The SDIO receive task (priority 20) on core 1: unpinned it took ~43% of
+    // core 0 at 22 Mbit/s, starving the ground-radio reactor (core 0,
+    // priority 14) that drains radio_rx, which then evicted ~200 frames/s.
+    cfg.link.rx_task_core = 1;
     err = winject_proxy_start(&cfg);
     if (err != ESP_OK)
     {
