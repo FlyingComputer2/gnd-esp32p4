@@ -28,7 +28,7 @@ include(${winject_l3_SOURCE_DIR}/src/BfcFetch.cmake)
 
 FetchContent_Declare(winject_sdio_proxy
     GIT_REPOSITORY https://github.com/winject-wireless/winject-radio-esp32-sdio-proxy.git
-    GIT_TAG 4634b5d75411d609e4b9fa205aeade8607998e88
+    GIT_TAG 1b2411580697b4fb36e5d4611f3b918620c496d6
 )
 FetchContent_GetProperties(winject_sdio_proxy)
 if(NOT winject_sdio_proxy_POPULATED)
@@ -38,7 +38,7 @@ include(${winject_sdio_proxy_SOURCE_DIR}/cmake/winject_sdio_proxy.cmake)
 
 FetchContent_Declare(vstreamer
     GIT_REPOSITORY https://github.com/FlyingComputer2/vstreamer.git
-    GIT_TAG 3fd00e559f224186b8ac09f5d0f63398fe564635)
+    GIT_TAG 00b5e53a0443456c8836e3282c3fa809f2b005e4)
 FetchContent_GetProperties(vstreamer)
 if(NOT vstreamer_POPULATED)
     FetchContent_Populate(vstreamer)
