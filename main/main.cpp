@@ -47,7 +47,10 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <bfc/cv_reactor.hpp>
+#include <algorithm>
 #include <atomic>
+#include <cstring>
+#include <optional>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -97,6 +100,9 @@ const app_upstream rc_up_queues{{"rc_tx", "rc_rx"}, 16};
 constexpr int synch_capture_gpio = 20;
 
 void start_rc_bridge();
+void start_cli_bridge();
+// USB console bridge counters (channel 4, see start_cli_bridge).
+std::atomic<uint32_t> cli_requests{0}, cli_replies{0}, cli_drops{0};
 
 // Configures and starts the applets on the app reactor and their named
 // queues, before L3 starts. They live for the program.
@@ -150,12 +156,21 @@ void start_applets() {
                       radio_rx ? radio_rx->capacity() : size_t(0));
         return std::string(b);
     });
+    // `get sys cli`: the USB console bridge (channel 4): lines sent to the
+    // consoles, datagrams back, and lines or reply records dropped.
+    sys.add_query("cli", [] {
+        char b[96];
+        std::snprintf(b, sizeof(b), "requests=%" PRIu32 " replies=%" PRIu32 " drops=%" PRIu32,
+                      cli_requests.load(), cli_replies.load(), cli_drops.load());
+        return std::string(b);
+    });
     sys_applet::config sy;
     sy.reactor = apps_reactor_name;
     sy.console = "0.0.0.0:5130";
     if (!sys.configure(sy) || !sys.start()) printf("GROUND_SYS_EXIT rc=1\n");
 
     start_rc_bridge();
+    start_cli_bridge();
 }
 
 // USB channel 3 "sync": the Android app runs a SynchClient against this
@@ -293,6 +308,99 @@ void start_rc_bridge() {
         }
     });
     from_l3->set_reactor(reactor);
+}
+
+// USB channel 4 "cli" (format cli-v1): the Android app's text consoles over
+// USB, for a phone that has no IP route to this board. A packet from the phone
+// is [u16 port, big-endian][one console line]; the line goes as one datagram
+// to this board's 127.0.0.1:<port> (l3 2400, sys 5130, the rover relays 2410 /
+// 5092 / 5132, ...). Each datagram back is returned as [u16 source port][text],
+// split at the channel MTU. One bridge socket, so a relay that replies to its
+// last sender sees the phone as one operator (another client of the same
+// relay takes over its replies, as between two UDP operators).
+constexpr uint16_t usb_cli_channel = 4;
+constexpr uint16_t usb_cli_mtu = 1445;
+constexpr size_t usb_cli_max_replies = 32;
+std::mutex cli_mu;
+std::deque<bfc::shared_sized_buffer> usb_cli_replies;
+std::atomic<int> cli_fd{-1};
+
+// USB task, under the USB lock: never blocks.
+bool cli_request(const uint8_t *data, size_t len) {
+    const int fd = cli_fd.load();
+    const uint16_t port = len >= 2 ? uint16_t(data[0] << 8 | data[1]) : 0;
+    if (fd < 0 || len < 3 || port == 0) { ++cli_drops; return false; }
+    sockaddr_in to{};
+    to.sin_family = AF_INET;
+    to.sin_port = htons(port);
+    to.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (sendto(fd, data + 2, len - 2, MSG_DONTWAIT, reinterpret_cast<const sockaddr *>(&to),
+               sizeof(to)) < 0) {
+        ++cli_drops;
+        return false;
+    }
+    ++cli_requests;
+    return true;
+}
+
+void register_usb_cli() {
+    const esp_err_t err = usb_upstream_register_service(usb_cli_channel, "cli",
+        []() -> std::optional<bfc::shared_sized_buffer> {
+            std::lock_guard<std::mutex> lock(cli_mu);
+            if (usb_cli_replies.empty()) return std::nullopt;
+            auto reply = std::move(usb_cli_replies.front());
+            usb_cli_replies.pop_front();
+            return reply;
+        },
+        cli_request,
+        [] { return cli_fd.load() >= 0; }, "cli-v1", usb_cli_mtu);
+    if (err != ESP_OK) printf("GROUND_USB_CLI register failed err=0x%x\n", err);
+}
+
+// The bridge socket on the app reactor: replies from the consoles, as they
+// arrive, to the USB channel (the newest usb_cli_max_replies kept).
+void start_cli_bridge() {
+    auto reactor = bfc::default_reactor_registry::get_instance().get(apps_reactor_name);
+    const int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (!reactor || fd < 0 || bind(fd, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr)) != 0) {
+        printf("GROUND_CLI_BRIDGE cannot start\n");
+        if (fd >= 0) close(fd);
+        return;
+    }
+    // Reactor thread only; console listings can be several kB.
+    auto buf = std::make_shared<std::vector<uint8_t>>(8192);
+    reactor->add_read_rdy(fd, [fd, buf] {
+        uint8_t record[usb_cli_mtu];
+        bool any = false;
+        for (size_t i = 0; i < max_batch; ++i) {
+            sockaddr_in from{};
+            socklen_t from_len = sizeof(from);
+            const ssize_t n = recvfrom(fd, buf->data(), buf->size(), MSG_DONTWAIT,
+                                       reinterpret_cast<sockaddr *>(&from), &from_len);
+            if (n < 0) break;
+            const uint16_t port = ntohs(from.sin_port);
+            record[0] = uint8_t(port >> 8);
+            record[1] = uint8_t(port);
+            ++cli_replies;
+            for (size_t off = 0; off < size_t(n);) {
+                const size_t chunk = std::min(size_t(n) - off, sizeof(record) - 2);
+                memcpy(record + 2, buf->data() + off, chunk);
+                off += chunk;
+                std::lock_guard<std::mutex> lock(cli_mu);
+                if (usb_cli_replies.size() >= usb_cli_max_replies) {
+                    usb_cli_replies.pop_front();
+                    ++cli_drops;
+                }
+                usb_cli_replies.push_back(bfc::shared_sized_buffer::copy_from(record, chunk + 2));
+                any = true;
+            }
+        }
+        if (any) usb_upstream_wake();
+    });
+    cli_fd = fd;
 }
 
 void start_radio_queues() {
@@ -537,7 +645,7 @@ static void *l3_main(void *)
         {
             ESP_ERROR_CHECK(ground_video_start(std::move(up)));
             ESP_ERROR_CHECK(usb_upstream_start());
-            printf("GROUND_READY usb=v2 video=0 msp_displayport=1:tba msp_rc_telemetry=2 sync=3\n");
+            printf("GROUND_READY usb=v2 video=0 msp_displayport=1:tba msp_rc_telemetry=2 sync=3 cli=4\n");
         }
     };
     // l3's UDP console, on the app reactor like l3 itself.
@@ -624,6 +732,7 @@ extern "C" void app_main(void)
     }
     register_usb_synch();
     register_usb_rc();
+    register_usb_cli();
     winject_proxy_config_t cfg = WINJECT_PROXY_CONFIG_DEFAULT();
     cfg.dplane_tx_queue = radio_tx_name;
     cfg.dplane_rx_queue = radio_rx_name;

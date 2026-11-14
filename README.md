@@ -19,6 +19,8 @@ See [video pipeline and multicast setup](docs/video-pipeline.md).
 | 0 | Video | Receive-only RTP H.264 (`rtp-h264-v1`) |
 | 1 | MSP DisplayPort | TBA; not registered |
 | 2 | MSP RC telemetry (rover_sample) | Bidirectional `msp-rc` (`rc-v1`): MSP v2 frames to and from L3 upstream 3, unchanged |
+| 3 | Clock sync | Bidirectional `sync` (`synch-v1`): krono rtt against this board's clock |
+| 4 | Text consoles | Bidirectional `cli` (`cli-v1`): `[u16 port BE][line]` to this board's `127.0.0.1:<port>` (l3 2400, sys 5130, rover relays 2410 / 5092 / 5132, ...); each reply datagram back as `[u16 source port][text]`, split at the MTU. For a phone with no IP route to the board. `get sys cli` on 5130 counts requests / replies / drops |
 
 All unsigned IDs 0–65535 are supported by the transport. Management is selected
 by record kind and never routed as channel-0 video. See the [wire/API specification](docs/usb-upstream-proxy.md).
