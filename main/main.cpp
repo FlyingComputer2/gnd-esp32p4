@@ -240,7 +240,8 @@ void register_usb_rc() {
             return frame;
         },
         rc_send_up,
-        [] { auto up = rc_upstream(); return up && up->connected(); }, "rc-v1", 64);
+        // MTU: whole MSP v2 frames; rover telemetry is 67 B since the 58 B payload.
+        [] { auto up = rc_upstream(); return up && up->connected(); }, "rc-v1", 256);
     if (err != ESP_OK) printf("GROUND_USB_RC register failed err=0x%x\n", err);
 }
 
