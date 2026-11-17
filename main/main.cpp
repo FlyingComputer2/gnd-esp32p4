@@ -47,12 +47,16 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <bfc/cv_reactor.hpp>
+#include <algorithm>
 #include <atomic>
+#include <cstring>
+#include <optional>
 #include <deque>
 #include <memory>
 #include <mutex>
 #include <sys/socket.h>
 #include <thread>
+#include <chrono>
 #include "utils/NetUtil.h"
 
 static const char *TAG = "rover_ground";
@@ -97,6 +101,9 @@ const app_upstream rc_up_queues{{"rc_tx", "rc_rx"}, 16};
 constexpr int synch_capture_gpio = 20;
 
 void start_rc_bridge();
+void start_cli_bridge();
+// USB console bridge counters (channel 4, see start_cli_bridge).
+std::atomic<uint32_t> cli_requests{0}, cli_replies{0}, cli_drops{0};
 
 // Configures and starts the applets on the app reactor and their named
 // queues, before L3 starts. They live for the program.
@@ -150,12 +157,21 @@ void start_applets() {
                       radio_rx ? radio_rx->capacity() : size_t(0));
         return std::string(b);
     });
+    // `get sys cli`: the USB console bridge (channel 4): lines sent to the
+    // consoles, datagrams back, and lines or reply records dropped.
+    sys.add_query("cli", [] {
+        char b[96];
+        std::snprintf(b, sizeof(b), "requests=%" PRIu32 " replies=%" PRIu32 " drops=%" PRIu32,
+                      cli_requests.load(), cli_replies.load(), cli_drops.load());
+        return std::string(b);
+    });
     sys_applet::config sy;
     sy.reactor = apps_reactor_name;
     sy.console = "0.0.0.0:5130";
     if (!sys.configure(sy) || !sys.start()) printf("GROUND_SYS_EXIT rc=1\n");
 
     start_rc_bridge();
+    start_cli_bridge();
 }
 
 // USB channel 3 "sync": the Android app runs a SynchClient against this
@@ -224,7 +240,8 @@ void register_usb_rc() {
             return frame;
         },
         rc_send_up,
-        [] { auto up = rc_upstream(); return up && up->connected(); }, "rc-v1", 64);
+        // MTU: whole MSP v2 frames; rover telemetry is 67 B since the 58 B payload.
+        [] { auto up = rc_upstream(); return up && up->connected(); }, "rc-v1", 256);
     if (err != ESP_OK) printf("GROUND_USB_RC register failed err=0x%x\n", err);
 }
 
@@ -293,6 +310,193 @@ void start_rc_bridge() {
         }
     });
     from_l3->set_reactor(reactor);
+}
+
+// USB channel 4 "cli" (format cli-v1): the Android app's text consoles over
+// USB, for a phone that has no IP route to this board. A packet from the phone
+// is [u16 port, big-endian][one console line]; the line goes as one datagram
+// to this board's 127.0.0.1:<port> (l3 2400, sys 5130, the rover relays 2410 /
+// 5092 / 5132, ...). Each datagram back is returned as [u16 source port][text],
+// split at the channel MTU. One bridge socket, so a relay that replies to its
+// last sender sees the phone as one operator (another client of the same
+// relay takes over its replies, as between two UDP operators).
+constexpr uint16_t usb_cli_channel = 4;
+constexpr uint16_t usb_cli_mtu = 1445;
+constexpr size_t usb_cli_max_replies = 32;
+std::mutex cli_mu;
+std::deque<bfc::shared_sized_buffer> usb_cli_replies;
+std::atomic<int> cli_fd{-1};
+
+// USB task, under the USB lock: never blocks.
+bool cli_request(const uint8_t *data, size_t len) {
+    const int fd = cli_fd.load();
+    const uint16_t port = len >= 2 ? uint16_t(data[0] << 8 | data[1]) : 0;
+    if (fd < 0 || len < 3 || port == 0) { ++cli_drops; return false; }
+    sockaddr_in to{};
+    to.sin_family = AF_INET;
+    to.sin_port = htons(port);
+    to.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (sendto(fd, data + 2, len - 2, MSG_DONTWAIT, reinterpret_cast<const sockaddr *>(&to),
+               sizeof(to)) < 0) {
+        ++cli_drops;
+        return false;
+    }
+    ++cli_requests;
+    return true;
+}
+
+void register_usb_cli() {
+    const esp_err_t err = usb_upstream_register_service(usb_cli_channel, "cli",
+        []() -> std::optional<bfc::shared_sized_buffer> {
+            std::lock_guard<std::mutex> lock(cli_mu);
+            if (usb_cli_replies.empty()) return std::nullopt;
+            auto reply = std::move(usb_cli_replies.front());
+            usb_cli_replies.pop_front();
+            return reply;
+        },
+        cli_request,
+        [] { return cli_fd.load() >= 0; }, "cli-v1", usb_cli_mtu);
+    if (err != ESP_OK) printf("GROUND_USB_CLI register failed err=0x%x\n", err);
+}
+
+// The bridge socket on the app reactor: replies from the consoles, as they
+// arrive, to the USB channel (the newest usb_cli_max_replies kept).
+void start_cli_bridge() {
+    auto reactor = bfc::default_reactor_registry::get_instance().get(apps_reactor_name);
+    const int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (!reactor || fd < 0 || bind(fd, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr)) != 0) {
+        printf("GROUND_CLI_BRIDGE cannot start\n");
+        if (fd >= 0) close(fd);
+        return;
+    }
+    // Reactor thread only; console listings can be several kB.
+    auto buf = std::make_shared<std::vector<uint8_t>>(8192);
+    reactor->add_read_rdy(fd, [fd, buf] {
+        uint8_t record[usb_cli_mtu];
+        bool any = false;
+        for (size_t i = 0; i < max_batch; ++i) {
+            sockaddr_in from{};
+            socklen_t from_len = sizeof(from);
+            const ssize_t n = recvfrom(fd, buf->data(), buf->size(), MSG_DONTWAIT,
+                                       reinterpret_cast<sockaddr *>(&from), &from_len);
+            if (n < 0) break;
+            const uint16_t port = ntohs(from.sin_port);
+            record[0] = uint8_t(port >> 8);
+            record[1] = uint8_t(port);
+            ++cli_replies;
+            for (size_t off = 0; off < size_t(n);) {
+                const size_t chunk = std::min(size_t(n) - off, sizeof(record) - 2);
+                memcpy(record + 2, buf->data() + off, chunk);
+                off += chunk;
+                std::lock_guard<std::mutex> lock(cli_mu);
+                if (usb_cli_replies.size() >= usb_cli_max_replies) {
+                    usb_cli_replies.pop_front();
+                    ++cli_drops;
+                }
+                usb_cli_replies.push_back(bfc::shared_sized_buffer::copy_from(record, chunk + 2));
+                any = true;
+            }
+        }
+        if (any) usb_upstream_wake();
+    });
+    cli_fd = fd;
+}
+
+// Ground side of the rover -> ground air link, for the phone's OSD (ROVTX
+// line): every 500 ms the RSSI of the rover's frames at our C6 (radio_info)
+// and l3's receive counters summed over all upstreams (air bytes and frames,
+// FEC wire on FEC upstreams; air_gap = frames missing from the upstream
+// sequences). Sent as MSP v2 0x4230 on USB channel 2 next to the rover's
+// telemetry: rssi:i8 (0 = unknown) link_ms:u32 (this board's monotonic ms at
+// the sample) rx_bytes:u32 rx_packets:u32 rx_lost:u32, free-running.
+constexpr uint16_t msp_func_ground_link = 0x4230;
+std::atomic<uint32_t> link_frames{0};
+
+bfc::shared_sized_buffer msp_v2_frame(char dir, uint16_t func, const uint8_t *payload, size_t len) {
+    std::vector<uint8_t> f;
+    f.reserve(9 + len);
+    f.insert(f.end(), {uint8_t('$'), uint8_t('X'), uint8_t(dir), 0, uint8_t(func), uint8_t(func >> 8),
+                       uint8_t(len), uint8_t(len >> 8)});
+    f.insert(f.end(), payload, payload + len);
+    uint8_t crc = 0;  // crc8 dvb-s2 over flag .. payload
+    for (size_t i = 3; i < f.size(); ++i) {
+        crc ^= f[i];
+        for (int b = 0; b < 8; ++b) crc = (crc & 0x80) ? uint8_t((crc << 1) ^ 0xd5) : uint8_t(crc << 1);
+    }
+    f.push_back(crc);
+    return bfc::shared_sized_buffer::copy_from(f.data(), f.size());
+}
+
+void put32le(uint8_t *p, uint32_t v) {
+    for (int i = 0; i < 4; ++i) p[i] = uint8_t(v >> (8 * i));
+}
+
+bool sum_link_rx(const winject::L3 &l3, uint64_t *bytes, uint64_t *packets, uint64_t *lost) {
+    auto ups = l3.upstreams().list();
+    if (!ups.ok()) return false;
+    *bytes = *packets = *lost = 0;
+    for (const auto &up : ups.value) {
+        const auto st = up.rx_stats();
+        if (!st.ok()) continue;
+        const bool fec = st.value.fec_packets > 0;
+        *bytes += fec ? st.value.fec_bytes : st.value.bytes;
+        *packets += fec ? st.value.fec_packets : st.value.packets;
+        *lost += st.value.air_gap;
+    }
+    return true;
+}
+
+// Blocking l3 calls: a thread of its own (PSRAM stack, low priority), never
+// l3's or the app reactor.
+void start_link_stats_poll(const winject::L3 &l3) {
+    esp_pthread_cfg_t prev{};
+    const bool had_prev = esp_pthread_get_cfg(&prev) == ESP_OK;
+    auto cfg = esp_pthread_get_default_config();
+    cfg.stack_size = 4 * 1024;
+    cfg.prio = 3;
+    cfg.thread_name = "link_stats";
+    cfg.stack_alloc_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    cfg.pin_to_core = 1;
+    esp_pthread_set_cfg(&cfg);
+    std::thread([l3] {
+        int8_t rssi = 0;
+        int64_t rssi_us = INT64_MIN / 2;
+        while (l3.running()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            uint64_t bytes = 0, packets = 0, lost = 0;
+            if (!sum_link_rx(l3, &bytes, &packets, &lost)) continue;
+            const int64_t now = esp_timer_get_time();
+            uint8_t p[17];
+            p[0] = uint8_t(now - rssi_us < 2000000 ? rssi : 0);
+            put32le(p + 1, uint32_t(now / 1000));
+            put32le(p + 5, uint32_t(bytes));
+            put32le(p + 9, uint32_t(packets));
+            put32le(p + 13, uint32_t(lost));
+            auto frame = msp_v2_frame('>', msp_func_ground_link, p, sizeof(p));
+            {
+                std::lock_guard<std::mutex> lock(rc_mu);
+                if (usb_rc_down.size() >= 8) usb_rc_down.pop_front();
+                usb_rc_down.push_back(std::move(frame));
+            }
+            ++link_frames;
+            // After the sample: radio_info is an m-plane round trip to the C6.
+            auto radio = l3.radios().get();
+            if (!radio.ok()) continue;
+            const auto info = radio.value.info(std::chrono::milliseconds(300));
+            if (info.ok() && info.value.rssi) {
+                rssi = *info.value.rssi;
+                rssi_us = esp_timer_get_time();
+            }
+        }
+    }).detach();
+    if (had_prev) esp_pthread_set_cfg(&prev);
+    else {
+        const auto def = esp_pthread_get_default_config();
+        esp_pthread_set_cfg(&def);
+    }
 }
 
 void start_radio_queues() {
@@ -537,13 +741,14 @@ static void *l3_main(void *)
         {
             ESP_ERROR_CHECK(ground_video_start(std::move(up)));
             ESP_ERROR_CHECK(usb_upstream_start());
-            printf("GROUND_READY usb=v2 video=0 msp_displayport=1:tba msp_rc_telemetry=2 sync=3\n");
+            printf("GROUND_READY usb=v2 video=0 msp_displayport=1:tba msp_rc_telemetry=2 sync=3 cli=4\n");
         }
     };
     // l3's UDP console, on the app reactor like l3 itself.
     winject::l3::console::Service console;
     auto started = [&](const winject::L3& l3)
     {
+        start_link_stats_poll(l3);
         if (!cfg.console_in.empty())
         {
             const winject::Status s =
@@ -624,6 +829,7 @@ extern "C" void app_main(void)
     }
     register_usb_synch();
     register_usb_rc();
+    register_usb_cli();
     winject_proxy_config_t cfg = WINJECT_PROXY_CONFIG_DEFAULT();
     cfg.dplane_tx_queue = radio_tx_name;
     cfg.dplane_rx_queue = radio_rx_name;
@@ -665,8 +871,8 @@ extern "C" void app_main(void)
         sdio_link_host_stats_t ls;
         winject_proxy_get_stats(&ps);
         usb_upstream_log_stats();
-        printf("GROUND_RC up=%" PRIu32 " up_drop=%" PRIu32 " down=%" PRIu32 "\n", rc_up_frames.load(),
-               rc_up_drops.load(), rc_down_frames.load());
+        printf("GROUND_RC up=%" PRIu32 " up_drop=%" PRIu32 " down=%" PRIu32 " link=%" PRIu32 "\n",
+               rc_up_frames.load(), rc_up_drops.load(), rc_down_frames.load(), link_frames.load());
         const auto us = usb_synch.stats();
         printf("GROUND_USB_SYNCH requests=%llu replies=%llu bad=%llu\n",
                (unsigned long long)us.requests, (unsigned long long)us.replies,
