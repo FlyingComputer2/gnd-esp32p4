@@ -56,6 +56,7 @@
 #include <mutex>
 #include <sys/socket.h>
 #include <thread>
+#include <chrono>
 #include "utils/NetUtil.h"
 
 static const char *TAG = "rover_ground";
@@ -403,6 +404,100 @@ void start_cli_bridge() {
     cli_fd = fd;
 }
 
+// Ground side of the rover -> ground air link, for the phone's OSD (ROVTX
+// line): every 500 ms the RSSI of the rover's frames at our C6 (radio_info)
+// and l3's receive counters summed over all upstreams (air bytes and frames,
+// FEC wire on FEC upstreams; air_gap = frames missing from the upstream
+// sequences). Sent as MSP v2 0x4230 on USB channel 2 next to the rover's
+// telemetry: rssi:i8 (0 = unknown) link_ms:u32 (this board's monotonic ms at
+// the sample) rx_bytes:u32 rx_packets:u32 rx_lost:u32, free-running.
+constexpr uint16_t msp_func_ground_link = 0x4230;
+std::atomic<uint32_t> link_frames{0};
+
+bfc::shared_sized_buffer msp_v2_frame(char dir, uint16_t func, const uint8_t *payload, size_t len) {
+    std::vector<uint8_t> f;
+    f.reserve(9 + len);
+    f.insert(f.end(), {uint8_t('$'), uint8_t('X'), uint8_t(dir), 0, uint8_t(func), uint8_t(func >> 8),
+                       uint8_t(len), uint8_t(len >> 8)});
+    f.insert(f.end(), payload, payload + len);
+    uint8_t crc = 0;  // crc8 dvb-s2 over flag .. payload
+    for (size_t i = 3; i < f.size(); ++i) {
+        crc ^= f[i];
+        for (int b = 0; b < 8; ++b) crc = (crc & 0x80) ? uint8_t((crc << 1) ^ 0xd5) : uint8_t(crc << 1);
+    }
+    f.push_back(crc);
+    return bfc::shared_sized_buffer::copy_from(f.data(), f.size());
+}
+
+void put32le(uint8_t *p, uint32_t v) {
+    for (int i = 0; i < 4; ++i) p[i] = uint8_t(v >> (8 * i));
+}
+
+bool sum_link_rx(const winject::L3 &l3, uint64_t *bytes, uint64_t *packets, uint64_t *lost) {
+    auto ups = l3.upstreams().list();
+    if (!ups.ok()) return false;
+    *bytes = *packets = *lost = 0;
+    for (const auto &up : ups.value) {
+        const auto st = up.rx_stats();
+        if (!st.ok()) continue;
+        const bool fec = st.value.fec_packets > 0;
+        *bytes += fec ? st.value.fec_bytes : st.value.bytes;
+        *packets += fec ? st.value.fec_packets : st.value.packets;
+        *lost += st.value.air_gap;
+    }
+    return true;
+}
+
+// Blocking l3 calls: a thread of its own (PSRAM stack, low priority), never
+// l3's or the app reactor.
+void start_link_stats_poll(const winject::L3 &l3) {
+    esp_pthread_cfg_t prev{};
+    const bool had_prev = esp_pthread_get_cfg(&prev) == ESP_OK;
+    auto cfg = esp_pthread_get_default_config();
+    cfg.stack_size = 4 * 1024;
+    cfg.prio = 3;
+    cfg.thread_name = "link_stats";
+    cfg.stack_alloc_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    cfg.pin_to_core = 1;
+    esp_pthread_set_cfg(&cfg);
+    std::thread([l3] {
+        int8_t rssi = 0;
+        int64_t rssi_us = INT64_MIN / 2;
+        while (l3.running()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            uint64_t bytes = 0, packets = 0, lost = 0;
+            if (!sum_link_rx(l3, &bytes, &packets, &lost)) continue;
+            const int64_t now = esp_timer_get_time();
+            uint8_t p[17];
+            p[0] = uint8_t(now - rssi_us < 2000000 ? rssi : 0);
+            put32le(p + 1, uint32_t(now / 1000));
+            put32le(p + 5, uint32_t(bytes));
+            put32le(p + 9, uint32_t(packets));
+            put32le(p + 13, uint32_t(lost));
+            auto frame = msp_v2_frame('>', msp_func_ground_link, p, sizeof(p));
+            {
+                std::lock_guard<std::mutex> lock(rc_mu);
+                if (usb_rc_down.size() >= 8) usb_rc_down.pop_front();
+                usb_rc_down.push_back(std::move(frame));
+            }
+            ++link_frames;
+            // After the sample: radio_info is an m-plane round trip to the C6.
+            auto radio = l3.radios().get();
+            if (!radio.ok()) continue;
+            const auto info = radio.value.info(std::chrono::milliseconds(300));
+            if (info.ok() && info.value.rssi) {
+                rssi = *info.value.rssi;
+                rssi_us = esp_timer_get_time();
+            }
+        }
+    }).detach();
+    if (had_prev) esp_pthread_set_cfg(&prev);
+    else {
+        const auto def = esp_pthread_get_default_config();
+        esp_pthread_set_cfg(&def);
+    }
+}
+
 void start_radio_queues() {
     radio_tx = std::make_shared<winject::core::ReactiveLossyQueue>();
     radio_rx = std::make_shared<winject::core::ReactiveLossyQueue>();
@@ -652,6 +747,7 @@ static void *l3_main(void *)
     winject::l3::console::Service console;
     auto started = [&](const winject::L3& l3)
     {
+        start_link_stats_poll(l3);
         if (!cfg.console_in.empty())
         {
             const winject::Status s =
@@ -774,8 +870,8 @@ extern "C" void app_main(void)
         sdio_link_host_stats_t ls;
         winject_proxy_get_stats(&ps);
         usb_upstream_log_stats();
-        printf("GROUND_RC up=%" PRIu32 " up_drop=%" PRIu32 " down=%" PRIu32 "\n", rc_up_frames.load(),
-               rc_up_drops.load(), rc_down_frames.load());
+        printf("GROUND_RC up=%" PRIu32 " up_drop=%" PRIu32 " down=%" PRIu32 " link=%" PRIu32 "\n",
+               rc_up_frames.load(), rc_up_drops.load(), rc_down_frames.load(), link_frames.load());
         const auto us = usb_synch.stats();
         printf("GROUND_USB_SYNCH requests=%llu replies=%llu bad=%llu\n",
                (unsigned long long)us.requests, (unsigned long long)us.replies,

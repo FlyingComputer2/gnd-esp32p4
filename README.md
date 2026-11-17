@@ -62,7 +62,16 @@ Upstream 3 carries the rover's rover_sample protocol, MSP v2 with one frame per 
 the rover's console: rov-esp32p4 README, "RC car"). This board does not parse it. Frames from USB channel 2
 (`msp-rc`) and from UDP 5120 go to the rover; telemetry from the rover goes to USB channel 2 (newest 8 kept) and
 to the last UDP 5120 sender for 10 s after it last sent. `GROUND_RC up= up_drop= down=` every 10 s counts
-frames each way. The rover follows one RC source at a time (each frame names its source).
+frames each way (`link=` the ground link frames below). The rover follows one RC source at a time (each frame
+names its source).
+
+USB channel 2 also carries this board's own MSP v2 frame `0x4230` (direction `>`), every 500 ms, for the app's
+OSD (ROVTX line): the rover → ground air link as this board's L3 receives it. Payload, little-endian:
+`rssi:i8 link_ms:u32 rx_bytes:u32 rx_packets:u32 rx_lost:u32` (17 B). rssi = dBm of the rover's frames at this
+C6 (`radio_info`, 0 = unknown); link_ms = this board's monotonic ms at the sample; the counters are
+free-running and summed over all upstreams: air bytes and frames (FEC wire on FEC upstreams) and frames missing
+from the upstream sequences (`air_gap`). Rates and loss come from two samples' difference. The rover's
+telemetry carries the same counters for the ground → rover direction (rov-esp32p4 README, TELEM).
 
 USB channel 3, `sync` (format `synch-v1`), answers the Android app's krono synch rtt requests against this board's
 clock, so the app can show camera-to-decode latency (see gnd-android `docs/USB_PROTOCOL.md`). This board's
