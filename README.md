@@ -48,7 +48,7 @@ channel 1, OFDM_24M, 20 dBm. Upstreams (buses follow the flow, not the index):
 | id | Stream | Buses (tx / rx) | FEC |
 |----|--------|-----------------|-----|
 | 0 | Clock sync, krono SynchServer (reference clock), UDP console 5110 | a1 / b2 | none |
-| 1 | Video | d4 / c3 | decoded from the rover's 6/8 (no TX FEC on the reverse reports) |
+| 1 | Video | d4 / c3 | RS 6/8, 4 ms spread, as the rover's (decodes the video, protects the reverse reports) |
 | 2 | Bandwidth tester, app_bwtest, UDP console 5100 (`test_send <offer_kbps> <duration_ms>`, `stats`, `clr`) | e5 / f6 | none |
 | 3 | RC car (rover_sample): RC up, telemetry down; bridged to USB channel 2 and UDP 5120 | 28 / 17 | none (RC repeats every 20 ms) |
 | 4 | Rover L3 m-plane: UDP server `0.0.0.0:2410`, replies go to the last sender (one operator at a time); replies over ~1445 B are dropped | a6 / 6a | none |
