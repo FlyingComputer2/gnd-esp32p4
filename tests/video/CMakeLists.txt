@@ -3,7 +3,7 @@ project(ground_video_test LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 include(FetchContent)
 FetchContent_Declare(vstreamer GIT_REPOSITORY https://github.com/FlyingComputer2/vstreamer.git
-    GIT_TAG 36d41958cdfa0c892cf73a984856250b4f9426cc)
+    GIT_TAG 21c3c8dde50f6249f8c93f30e4120a141dbe09d7)
 FetchContent_Declare(bfc GIT_REPOSITORY https://github.com/therooftopprinz/BFC.git
     GIT_TAG 8dc02add56771bf05f60519b3915c8fc9464d24b)
 foreach(dep vstreamer bfc)
@@ -36,7 +36,7 @@ add_test(NAME video_queue_test COMMAND video_test queue)
 # FETCHCONTENT_SOURCE_DIR_WINJECT_L3 / _WINJECT_FEC at the firmware build's
 # copies). l3's library brings winject-fec.
 FetchContent_Declare(winject_l3 GIT_REPOSITORY https://github.com/winject-wireless/winject-l3.git
-    GIT_TAG 1af14c513dad7dbf4dba4166825a4e1e756874fe)
+    GIT_TAG caa764b47effedaeb81008c31089fcfc47f4b5ee)
 FetchContent_GetProperties(winject_l3)
 if(NOT winject_l3_POPULATED)
     FetchContent_Populate(winject_l3)
