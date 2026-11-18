@@ -1,5 +1,6 @@
 # Ground P4: C6 SDIO radio proxy, local winject-l3, and USB application channels.
-# Video recovery runs on P4; recovered RTP is shared by Ethernet and USB.
+# Video FEC is winject-l3's (upstream 1); the P4's vstreamer receiver shares the
+# RTP l3 delivers by Ethernet and USB.
 cmake_minimum_required(VERSION 3.22)
 if(NOT DEFINED PROJECT_VER)
     set(PROJECT_VER "0.1.0")
@@ -18,13 +19,16 @@ FetchContent_Declare(bfc
 )
 FetchContent_Declare(winject_l3
     GIT_REPOSITORY https://github.com/winject-wireless/winject-l3.git
-    GIT_TAG 4255053470eb485356b9623e578ecd384165a03a
+    GIT_TAG 23a71516a0190384dac6d8db99f8a1b0d5c4ef7e
 )
 FetchContent_GetProperties(winject_l3)
 if(NOT winject_l3_POPULATED)
     FetchContent_Populate(winject_l3)
 endif()
 include(${winject_l3_SOURCE_DIR}/src/BfcFetch.cmake)
+# winject-fec, the FEC behind winject-l3's upstreams, at l3's pin (checked there).
+set(WINJECT_FEC_PIN d30e83171a436f2bec6e9d5ed7ddb38a45dcfccb)
+include(${winject_l3_SOURCE_DIR}/cmake/WinjectFecFetch.cmake)
 
 FetchContent_Declare(winject_sdio_proxy
     GIT_REPOSITORY https://github.com/winject-wireless/winject-radio-esp32-sdio-proxy.git
@@ -38,19 +42,12 @@ include(${winject_sdio_proxy_SOURCE_DIR}/cmake/winject_sdio_proxy.cmake)
 
 FetchContent_Declare(vstreamer
     GIT_REPOSITORY https://github.com/FlyingComputer2/vstreamer.git
-    GIT_TAG 6089e8a047f9a8fdd9c35b7ffe0f3b25d238f36a)
+    GIT_TAG a0eeb5808502cb44f445bb336f3a181b640d1a55)
 FetchContent_GetProperties(vstreamer)
 if(NOT vstreamer_POPULATED)
     FetchContent_Populate(vstreamer)
 endif()
 # Receive-only integration: no camera, hardware encoder, SDL or TX pipeline.
-FetchContent_Declare(isa-l GIT_REPOSITORY https://github.com/intel/isa-l.git
-    GIT_TAG 41a840a784040dc68b5363c0a6280e796382b707)
-FetchContent_GetProperties(isa-l)
-if(NOT isa-l_POPULATED)
-    FetchContent_Populate(isa-l)
-endif()
-set(VSTREAMER_ISAL_ROOT ${isa-l_SOURCE_DIR})
 
 # Clock sync (ground = SynchServer, the reference).
 FetchContent_Declare(krono
@@ -73,8 +70,12 @@ endif()
 
 set(EXTRA_COMPONENT_DIRS ${WINJECT_SDIO_PROXY_COMPONENT_DIRS}
                          ${winject_l3_SOURCE_DIR}/idf/winject_l3
+                         ${WINJECT_FEC_SOURCE_DIR}/idf/winject_fec
                          ${winject_l3_SOURCE_DIR}/idf/app_bwtest
                          ${krono_SOURCE_DIR}/idf/krono
                          ${sys_applet_SOURCE_DIR}/idf/sys_applet)
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+# Embedded scheduling can hold a queued parity shard past the desktop 5 ms
+# floor of the FEC receiver's give-up margin.
+idf_build_set_property(COMPILE_DEFINITIONS "WINJECT_FEC_RX_DEADLINE_MARGIN_MIN_MS=40" APPEND)
 project(gnd-esp32p4)

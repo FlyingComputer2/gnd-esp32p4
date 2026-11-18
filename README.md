@@ -2,7 +2,7 @@
 
 Ground-station firmware for Guition JC-ESP32P4-M3-DEV (P4 rev 1.3, C6 on SDIO).
 The P4 runs the SDIO proxy, winject-l3 and vstreamer's `stream_receiver`.
-It recovers radio FEC once, then shares recovered RTP H.264 with Ethernet
+Its l3 recovers the video's radio FEC (winject-fec) once, then the receiver shares the RTP H.264 with Ethernet
 multicast and [Android](https://github.com/FlyingComputer2/gnd-android).
 Android depayloads RTP and displays H.264 through MediaCodec.
 
@@ -48,7 +48,7 @@ channel 1, OFDM_24M, 20 dBm. Upstreams (buses follow the flow, not the index):
 | id | Stream | Buses (tx / rx) | FEC |
 |----|--------|-----------------|-----|
 | 0 | Clock sync, krono SynchServer (reference clock), UDP console 5110 | a1 / b2 | none |
-| 1 | Video | d4 / c3 | none (vstreamer's own) |
+| 1 | Video | d4 / c3 | decoded from the rover's 6/8 (no TX FEC on the reverse reports) |
 | 2 | Bandwidth tester, app_bwtest, UDP console 5100 (`test_send <offer_kbps> <duration_ms>`, `stats`, `clr`) | e5 / f6 | none |
 | 3 | RC car (rover_sample): RC up, telemetry down; bridged to USB channel 2 and UDP 5120 | 28 / 17 | none (RC repeats every 20 ms) |
 | 4 | Rover L3 m-plane: UDP server `0.0.0.0:2410`, replies go to the last sender (one operator at a time); replies over ~1445 B are dropped | a6 / 6a | none |
@@ -83,8 +83,8 @@ written. Interrupt mode uses a sync wire from rover GPIO20 (header pin 13) to **
 on JP1 pin 6. The wire is active low and Hi-Z at rest: the rover's pin is open drain, and this pin is an input
 with the internal pull-up and a falling-edge interrupt. Console `status` on UDP 5110; protocol in krono
 `docs/synch.md`, usage in the rov-esp32p4 README.
-These must match the rover (with buses swapped). Video has no manager-level FEC;
-vstreamer's FEC terminates at the ground P4; P4 returns receiver feedback. The manager console is bound to
+These must match the rover (with buses swapped). Video FEC is l3's: the rover sends upstream 1 with FEC
+6/8 and this board's l3 decodes it; P4 returns receiver feedback with upstream 1's air counters. The manager console is bound to
 0.0.0.0:2400 (no authentication; Ethernet is an internal link). UDP 2420 reaches the rover C6 radio m-plane over
 upstream 5. It is also unauthenticated and can change the rover radio's channel, power and modulation or reset it.
 UDP 5092 reaches the rover vstreamer m-plane over upstream 6; it is unauthenticated and can reconfigure the rover
@@ -156,7 +156,7 @@ published its video transport. `GROUND_USB channel=...` reports local counters.
 The current boot does not automatically restart the manager. Backend failure
 invalidates an open USB session; udp_ota stays available over Ethernet.
 
-Host tests cover P4 FEC recovery and feedback over UDP and direct queues, ordered retry after Ethernet TX backpressure, identical RTP output on both
+Host tests cover P4 in-order delivery and feedback over UDP and direct queues, ordered retry after Ethernet TX backpressure, identical RTP output on both
 branches, queue isolation, and Android fragmented IDR reconstruction. Hardware USB
 enumeration, live video, power delivery and sustained latency still need a
 P4/phone bench run. Live hardware validation is recorded separately from host test results.

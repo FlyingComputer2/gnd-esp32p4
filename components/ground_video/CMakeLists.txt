@@ -2,7 +2,8 @@ if(CMAKE_BUILD_EARLY_EXPANSION)
     idf_component_register(REQUIRES usb_upstream lwip pthread PRIV_REQUIRES esp_timer)
     return()
 endif()
-# Compile the pinned stock receiver with a small P4 pool/egress queue.
+# Compile the pinned stock receiver (no FEC: l3 delivers the stream in sequence)
+# with a small P4 pool/egress queue.
 set(rx_root ${vstreamer_SOURCE_DIR})
 set(ENABLE_STREAM_RECEIVER ON)
 set(VSTREAMER_SOURCES)
@@ -22,16 +23,11 @@ if(NOT CMAKE_BUILD_EARLY_EXPANSION)
 endif()
 idf_component_register(SRCS "ground_video.cpp" ${VSTREAMER_SOURCES}
     ${rx_root}/idf/vstreamer/src/live_mplane.cpp
-    ${VSTREAMER_ISAL_ROOT}/erasure_code/ec_base.c
     INCLUDE_DIRS "include" ${CMAKE_CURRENT_BINARY_DIR}/generated ${rx_root}/src
                  ${rx_root}/idf/vstreamer/include
                  ${bfc_SOURCE_DIR}/src ${BFC_CONFIG_DIR}
-    PRIV_INCLUDE_DIRS ${rx_root}/idf/vstreamer/compat ${VSTREAMER_ISAL_ROOT}/include ${VSTREAMER_ISAL_ROOT}/erasure_code
+    PRIV_INCLUDE_DIRS ${rx_root}/idf/vstreamer/compat
     REQUIRES usb_upstream lwip pthread
     PRIV_REQUIRES esp_timer)
 target_compile_options(${COMPONENT_LIB} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fexceptions;-std=gnu++17>)
-set_source_files_properties(${VSTREAMER_ISAL_ROOT}/erasure_code/ec_base.c
-    PROPERTIES COMPILE_DEFINITIONS NDEBUG)
 
-# Embedded scheduling can delay a queued parity shard beyond the desktop 5 ms floor.
-target_compile_definitions(${COMPONENT_LIB} PUBLIC VSTREAMER_RX_DEADLINE_MARGIN_MIN_MS=40)

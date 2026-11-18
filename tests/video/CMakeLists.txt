@@ -3,9 +3,9 @@ project(ground_video_test LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 include(FetchContent)
 FetchContent_Declare(vstreamer GIT_REPOSITORY https://github.com/FlyingComputer2/vstreamer.git
-    GIT_TAG 0b8f9df47cf35bb3b0fe78ac863d81b3f845ef4b)
+    GIT_TAG a0eeb5808502cb44f445bb336f3a181b640d1a55)
 FetchContent_Declare(bfc GIT_REPOSITORY https://github.com/therooftopprinz/BFC.git
-    GIT_TAG 3d68f8e61ef933718a51f248c76be8894d0cb491)
+    GIT_TAG 8dc02add56771bf05f60519b3915c8fc9464d24b)
 FetchContent_Declare(isa-l GIT_REPOSITORY https://github.com/intel/isa-l.git GIT_TAG v2.31.1 GIT_SHALLOW TRUE)
 foreach(dep vstreamer bfc isa-l)
     FetchContent_GetProperties(${dep})
@@ -21,11 +21,10 @@ configure_file(${vstreamer_SOURCE_DIR}/src/components/components_config.hpp.in
 file(READ ${vstreamer_SOURCE_DIR}/src/components/stream_receiver.hpp rx_header)
 string(REPLACE "k_queue_depth = 4096;" "k_queue_depth = 64;" rx_header "${rx_header}")
 file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/generated/components/stream_receiver.hpp "${rx_header}")
-add_library(video_core ${VSTREAMER_SOURCES} ${isa-l_SOURCE_DIR}/erasure_code/ec_base.c)
+# The receiver has no FEC (winject-l3 delivers the stream in sequence).
+add_library(video_core ${VSTREAMER_SOURCES})
 target_include_directories(video_core PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/generated
-    ${vstreamer_SOURCE_DIR}/src ${bfc_SOURCE_DIR}/src ${CMAKE_CURRENT_LIST_DIR}/../../bfc_config
-    PRIVATE ${isa-l_SOURCE_DIR}/include ${isa-l_SOURCE_DIR}/erasure_code)
-target_compile_definitions(video_core PRIVATE NDEBUG)
+    ${vstreamer_SOURCE_DIR}/src ${bfc_SOURCE_DIR}/src ${CMAKE_CURRENT_LIST_DIR}/../../bfc_config)
 add_executable(video_test video_test.cpp)
 target_include_directories(video_test PRIVATE ../../components/ground_video/include)
 target_link_libraries(video_test PRIVATE video_core pthread)
@@ -42,22 +41,19 @@ if(NOT winject_l3_POPULATED)
     FetchContent_Populate(winject_l3)
 endif()
 set(manager ${winject_l3_SOURCE_DIR}/src/manager)
+# This l3 pin still has its vendored codec (ISA-L).
 add_executable(config_test config_test.cpp
     ${manager}/Config.cpp ${manager}/utils/NetUtil.cpp ${manager}/radio/PhyAirtime.cpp
     ${manager}/fec/vendor/rs_block_erasure.cpp
     ${manager}/fec/vendor/rs_block_erasure_rx.cpp
-    ${manager}/fec/vendor/rs_encode_scalar.cpp)
-target_include_directories(config_test PRIVATE ${manager} ${isa-l_SOURCE_DIR}/include)
+    ${manager}/fec/vendor/rs_encode_scalar.cpp
+    ${isa-l_SOURCE_DIR}/erasure_code/ec_base.c)
+target_include_directories(config_test PRIVATE ${manager} ${isa-l_SOURCE_DIR}/include
+    ${isa-l_SOURCE_DIR}/erasure_code)
+set_source_files_properties(${isa-l_SOURCE_DIR}/erasure_code/ec_base.c
+    PROPERTIES COMPILE_DEFINITIONS NDEBUG)
 target_link_libraries(config_test PRIVATE video_core)
 add_test(NAME config_test COMMAND config_test)
-
-target_compile_definitions(video_core PUBLIC VSTREAMER_RX_DEADLINE_MARGIN_MIN_MS=40)
-add_executable(fec_schedule_test fec_schedule_test.cpp)
-target_link_libraries(fec_schedule_test PRIVATE video_core)
-add_test(NAME fec_schedule_test COMMAND fec_schedule_test)
-add_executable(fec_decode_test fec_decode_test.cpp)
-target_link_libraries(fec_decode_test PRIVATE video_core)
-add_test(NAME fec_decode_test COMMAND fec_decode_test)
 
 add_executable(owned_ingress_test owned_ingress_test.cpp)
 target_link_libraries(owned_ingress_test PRIVATE video_core)

@@ -1,5 +1,6 @@
 #include "components/stream_receiver.hpp"
 #include "core/stream_header.hpp"
+#include "core/stream_media_header.hpp"
 #include "core/rtp_h264.hpp"
 #include "core/stream_telemetry.hpp"
 #include "video_fanout.hpp"
@@ -20,7 +21,7 @@ int main(int argc, char **) {
     std::deque<bfc::shared_sized_buffer> input, reports;
     vstreamer::stream_receiver receiver;
     assert(receiver.configure("listen", "127.0.0.1:21982") == 0);
-    assert(receiver.configure("max_datagram", "1445") == 0);
+    assert(receiver.configure("max_datagram", "1444") == 0);
     if (direct) {
         assert(receiver.set_datagram_transport({}, {}) == -EINVAL);
         assert(receiver.set_datagram_transport([&]() -> std::optional<bfc::shared_sized_buffer> {
@@ -45,20 +46,16 @@ int main(int argc, char **) {
     while(packer.pending()) {
         int n=packer.pop_datagram(bytes,sizeof(bytes)); assert(n>0); rtp.emplace_back(bytes,bytes+n);
     }
-    vstreamer::rs_block_erasure fec; assert(fec.init(3,5,1445));
-    std::vector<std::vector<uint8_t>> shards;
-    vstreamer::rs_block_erasure::tx_out batch;
-    for(auto &p:rtp) {
-        fec.push_app(p.data(),p.size(),&batch);
-        for(auto &s:batch.shards) shards.emplace_back(s.u8(),s.u8()+s.size());
+    // One media datagram per RTP packet: l3 has already recovered and ordered them.
+    std::vector<std::vector<uint8_t>> datagrams;
+    for(size_t i=0;i<rtp.size();++i) {
+        std::vector<uint8_t> d(vstreamer::k_media_header_len+rtp[i].size());
+        vstreamer::media_header_write(d.data(),uint16_t(500+i));
+        std::copy(rtp[i].begin(),rtp[i].end(),d.begin()+vstreamer::k_media_header_len);
+        datagrams.push_back(std::move(d));
     }
-    fec.flush(&batch);
-    for(auto &s:batch.shards) shards.emplace_back(s.u8(),s.u8()+s.size());
-    for(size_t i=0;i<shards.size();++i) {
-        // Recover one missing data shard per block. Not the stream's first shard: the receiver
-        // starts its sequence at the first data shard it sees.
-        if(i%5==1 && i+3<shards.size()) continue;
-        const std::vector<uint8_t> &wire=shards[i]; // A media datagram is one FEC shard.
+    for(size_t i=0;i<datagrams.size();++i) {
+        const std::vector<uint8_t> &wire=datagrams[i];
         if (direct) {
             std::lock_guard<std::mutex> lock(queue_mutex);
             input.push_back(bfc::shared_sized_buffer::copy_from(wire.data(), wire.size()));
@@ -149,5 +146,5 @@ int main(int argc, char **) {
     }
     assert(report_seen);
     receiver.close(); close(fd);
-    puts("P4 RX: FEC recovery, identical USB/multicast RTP, isolated queues, reverse feedback passed");
+    puts("P4 RX: in-order delivery, identical USB/multicast RTP, isolated queues, reverse feedback passed");
 }

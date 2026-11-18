@@ -434,6 +434,30 @@ void put32le(uint8_t *p, uint32_t v) {
     for (int i = 0; i < 4; ++i) p[i] = uint8_t(v >> (8 * i));
 }
 
+// The video upstream's (1) receive counters, for the vstreamer receiver's link
+// reports to the rover and the GROUND_FEC log line.
+void sample_video_link(const winject::L3 &l3) {
+    auto up = l3.upstreams().get(1);
+    if (!up.ok()) return;
+    const auto st = up.value.rx_stats();
+    if (!st.ok()) return;
+    const auto &s = st.value;
+    ground_video_link_stats l;
+    const bool fec = s.fec_packets > 0;
+    l.packets = fec ? s.fec_packets : s.packets;
+    l.bytes = fec ? s.fec_bytes : s.bytes;
+    l.gaps = s.air_gap;
+    l.fec_recovered = s.fec_recovered;
+    l.fec_lost = s.fec_lost;
+    l.fec_gap = s.fec_gap;
+    l.fec_given_up = s.fec_given_up;
+    l.fec_late = s.fec_late;
+    l.fec_drops = s.fec_drops;
+    l.fec_spread_ms = s.fec_spread_est_ms;
+    l.fec_jitter_ms = s.fec_jitter_est_ms;
+    ground_video_set_link_stats(l);
+}
+
 bool sum_link_rx(const winject::L3 &l3, uint64_t *bytes, uint64_t *packets, uint64_t *lost) {
     auto ups = l3.upstreams().list();
     if (!ups.ok()) return false;
@@ -466,6 +490,7 @@ void start_link_stats_poll(const winject::L3 &l3) {
         int64_t rssi_us = INT64_MIN / 2;
         while (l3.running()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            sample_video_link(l3);
             uint64_t bytes = 0, packets = 0, lost = 0;
             if (!sum_link_rx(l3, &bytes, &packets, &lost)) continue;
             const int64_t now = esp_timer_get_time();
@@ -641,7 +666,10 @@ static void *l3_main(void *)
     video.bus_rx = 0xc3;
     video.rx_queue_capacity = 256;
     video.scheduler_budget = 4096;
-    video.fec_type = winject::core::FecType::none; // vstreamer FEC terminates at the P4 receiver.
+    // The rover sends with FEC (6/8, its upstream 1); l3 decodes from the shard
+    // headers whatever this side's setting. The reverse direction carries only
+    // the receiver's link reports.
+    video.fec_type = winject::core::FecType::none;
     cfg.upstreams.push_back(video);
     winject::core::UpstreamConfig bwtest;
     bwtest.index = 2; // Rover upstream 2 with the buses swapped.
