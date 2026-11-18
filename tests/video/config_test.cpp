@@ -5,7 +5,7 @@
 
 int main()
 {
-    winject::Config cfg;
+    winject::core::Config cfg;
     cfg.domain = 0xb00b;
     cfg.modulation = "OFDM_24M";
     cfg.radio_device.mplane.sin_family = AF_INET;

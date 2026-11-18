@@ -15,6 +15,8 @@ jobs:
             cmake -S tests/video -B video-build -DCMAKE_BUILD_TYPE=Debug \
               -DFETCHCONTENT_SOURCE_DIR_VSTREAMER=/project/build/_deps/vstreamer-src \
               -DFETCHCONTENT_SOURCE_DIR_BFC=/project/build/_deps/bfc-src \
+              -DFETCHCONTENT_SOURCE_DIR_WINJECT_L3=/project/build/_deps/winject_l3-src \
+              -DFETCHCONTENT_SOURCE_DIR_WINJECT_FEC=/project/build/_deps/winject_fec-src \
               -DFETCHCONTENT_SOURCE_DIR_ISA-L=/project/build/_deps/isa-l-src &&
             cmake --build video-build -j 2 && ctest --test-dir video-build --output-on-failure
           '
