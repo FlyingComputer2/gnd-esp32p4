@@ -11,7 +11,7 @@ include(FetchContent)
 # registries. BFC_PIN is checked against each dependency's own pin
 # (BfcFetch.cmake), and BFC_CONFIG_DIR holds this firmware's bfc_config.hpp
 # (function type, allocator, poll reactor), which every bfc user compiles with.
-set(BFC_PIN 8dc02add56771bf05f60519b3915c8fc9464d24b)
+set(BFC_PIN 804b986b10d142c2f6ed0cd93bfbfcad8c73c8a6)
 set(BFC_CONFIG_DIR ${CMAKE_CURRENT_LIST_DIR}/bfc_config)
 FetchContent_Declare(bfc
     GIT_REPOSITORY https://github.com/therooftopprinz/BFC.git
@@ -19,7 +19,7 @@ FetchContent_Declare(bfc
 )
 FetchContent_Declare(winject_l3
     GIT_REPOSITORY https://github.com/winject-wireless/winject-l3.git
-    GIT_TAG caa764b47effedaeb81008c31089fcfc47f4b5ee
+    GIT_TAG 70d3532fb19c127639d4a078456ea36dd37cb265
 )
 FetchContent_GetProperties(winject_l3)
 if(NOT winject_l3_POPULATED)
@@ -27,12 +27,12 @@ if(NOT winject_l3_POPULATED)
 endif()
 include(${winject_l3_SOURCE_DIR}/src/BfcFetch.cmake)
 # winject-fec, the FEC behind winject-l3's upstreams, at l3's pin (checked there).
-set(WINJECT_FEC_PIN d30e83171a436f2bec6e9d5ed7ddb38a45dcfccb)
+set(WINJECT_FEC_PIN c4c9b4c7685a9a7d88ea26d9c0b31ab52b57da55)
 include(${winject_l3_SOURCE_DIR}/cmake/WinjectFecFetch.cmake)
 
 FetchContent_Declare(winject_sdio_proxy
     GIT_REPOSITORY https://github.com/winject-wireless/winject-radio-esp32-sdio-proxy.git
-    GIT_TAG 1b2411580697b4fb36e5d4611f3b918620c496d6
+    GIT_TAG e625385fd5034d56551b137d5622373ecee54dd6
 )
 FetchContent_GetProperties(winject_sdio_proxy)
 if(NOT winject_sdio_proxy_POPULATED)
@@ -42,7 +42,7 @@ include(${winject_sdio_proxy_SOURCE_DIR}/cmake/winject_sdio_proxy.cmake)
 
 FetchContent_Declare(vstreamer
     GIT_REPOSITORY https://github.com/FlyingComputer2/vstreamer.git
-    GIT_TAG 21c3c8dde50f6249f8c93f30e4120a141dbe09d7)
+    GIT_TAG 39707640910b759eb68318df428294478be5c8ba)
 FetchContent_GetProperties(vstreamer)
 if(NOT vstreamer_POPULATED)
     FetchContent_Populate(vstreamer)

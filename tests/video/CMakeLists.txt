@@ -3,9 +3,9 @@ project(ground_video_test LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 include(FetchContent)
 FetchContent_Declare(vstreamer GIT_REPOSITORY https://github.com/FlyingComputer2/vstreamer.git
-    GIT_TAG 21c3c8dde50f6249f8c93f30e4120a141dbe09d7)
+    GIT_TAG 39707640910b759eb68318df428294478be5c8ba)
 FetchContent_Declare(bfc GIT_REPOSITORY https://github.com/therooftopprinz/BFC.git
-    GIT_TAG 8dc02add56771bf05f60519b3915c8fc9464d24b)
+    GIT_TAG 804b986b10d142c2f6ed0cd93bfbfcad8c73c8a6)
 foreach(dep vstreamer bfc)
     FetchContent_GetProperties(${dep})
     if(NOT ${dep}_POPULATED)
@@ -36,12 +36,12 @@ add_test(NAME video_queue_test COMMAND video_test queue)
 # FETCHCONTENT_SOURCE_DIR_WINJECT_L3 / _WINJECT_FEC at the firmware build's
 # copies). l3's library brings winject-fec.
 FetchContent_Declare(winject_l3 GIT_REPOSITORY https://github.com/winject-wireless/winject-l3.git
-    GIT_TAG caa764b47effedaeb81008c31089fcfc47f4b5ee)
+    GIT_TAG 70d3532fb19c127639d4a078456ea36dd37cb265)
 FetchContent_GetProperties(winject_l3)
 if(NOT winject_l3_POPULATED)
     FetchContent_Populate(winject_l3)
 endif()
-set(BFC_PIN 8dc02add56771bf05f60519b3915c8fc9464d24b)
+set(BFC_PIN 804b986b10d142c2f6ed0cd93bfbfcad8c73c8a6)
 set(BFC_CONFIG_DIR ${CMAKE_CURRENT_LIST_DIR}/../../bfc_config)
 add_subdirectory(${winject_l3_SOURCE_DIR}/src/manager winject_l3 EXCLUDE_FROM_ALL)
 add_executable(config_test config_test.cpp)
