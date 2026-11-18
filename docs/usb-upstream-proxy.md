@@ -1,7 +1,7 @@
 # USB upstream proxy, RGP4 version 2
 
 The P4 runs winject-l3 and exposes its queue app transports over one USB bulk
-endpoint pair. P4 runs vstreamer's FEC receiver; Android depayloads recovered RTP and uses
+endpoint pair. P4's l3 recovers the video FEC and vstreamer's receiver hands on the RTP; Android depayloads it and uses
 MediaCodec for video decode. Neither endpoint treats USB transfer boundaries as datagrams.
 
 | Channel (`u16`) | Application | State |
@@ -42,8 +42,8 @@ there are at most 16 registrations. L3 owns construction/disconnection, and
 retained shared handles stay memory-valid after teardown. No automatic manager
 restart/rebinding is implemented. L3 loss invalidates an open USB session.
 
-Video manager FEC is disabled. vstreamer FEC ends on P4 and its receiver reports
-return through L3, independently of USB. See [video pipeline](video-pipeline.md).
+Video FEC is l3's (upstream 1, sent by the rover) and ends on P4; the vstreamer
+receiver's reports return through L3, independently of USB. See [video pipeline](video-pipeline.md).
 
 ## Record header
 

@@ -1,5 +1,5 @@
 #include "components/stream_receiver.hpp"
-#include "core/rs_block_erasure.hpp"
+#include "core/stream_media_header.hpp"
 #include <atomic>
 #include <cassert>
 #include <chrono>
@@ -8,21 +8,16 @@
 #include <mutex>
 #include <thread>
 
-static void check(bool fec_enabled) {
+// A datagram from l3's queue is kept, not copied: the SDU handed on is a view of it.
+int main() {
     std::vector<uint8_t> app(1003);
     for (size_t i=0; i<app.size(); ++i) app[i]=uint8_t(i);
-    // fec none is a data-only stream (k = n = 1); with FEC the data shard leaves before parity.
-    vstreamer::rs_block_erasure tx;
-    assert(tx.init(1,fec_enabled?2:1,1445));
-    vstreamer::rs_block_erasure::tx_out air;
-    tx.push_app(app.data(),app.size(),&air);
-    assert(air.shards.size()==(fec_enabled?2u:1u));
-    const auto &shard=air.shards.front();
-    const size_t size=shard.size();
+    const size_t size=vstreamer::k_media_header_len+app.size();
     auto *bytes=new std::byte[size];
     std::atomic<unsigned> released{0};
-    std::memcpy(bytes,shard.u8(),size);
-    const auto *expected=reinterpret_cast<uint8_t*>(bytes)+vstreamer::rs_block_erasure::k_data_header_len;
+    vstreamer::media_header_write(reinterpret_cast<uint8_t*>(bytes),7);
+    std::memcpy(bytes+vstreamer::k_media_header_len,app.data(),app.size());
+    const auto *expected=reinterpret_cast<uint8_t*>(bytes)+vstreamer::k_media_header_len;
     std::deque<bfc::shared_sized_buffer> queue;
     std::mutex mu;
     queue.push_back(bfc::shared_sized_buffer::adopt(bytes,size,size,[&](std::byte *p){
@@ -53,4 +48,3 @@ static void check(bool fec_enabled) {
     second={};
     assert(released==1); // Last consumer alone releases the original storage.
 }
-int main() { check(false);check(true); }

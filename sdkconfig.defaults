@@ -45,10 +45,9 @@ CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
 
 CONFIG_FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER=y
 
-# Ground compiles vstreamer directly; expose its PIE recovery option locally.
-CONFIG_VSTREAMER_RS_PIE=y
 CONFIG_WINJECT_PROXY_DPLANE_PSRAM=y
-CONFIG_VSTREAMER_RX_PSRAM=y
+# Video FEC is l3's (winject-fec): its decode rows and rebuilt packets in PSRAM.
+CONFIG_WINJECT_FEC_RX_PSRAM=y
 
 # Every malloc prefers PSRAM (falling back to internal), as on the rover. At
 # 16 KB packet buffers filled

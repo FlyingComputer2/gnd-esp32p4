@@ -3,7 +3,6 @@
 #include "multicast_egress.hpp"
 #include "usb_upstream.hpp"
 #include "components/stream_receiver.hpp"
-#include "core/rs_encode_scalar.hpp"
 #include "vstreamer_idf/live_mplane.hpp"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -31,6 +30,10 @@ std::atomic<uint64_t> fec_input{0}, recovered_rtp_gaps{0}, recovered_rtp_reorder
 std::atomic<uint64_t> feedback_drop{0}, multicast_sent{0}, multicast_offline{0}, multicast_send_errors{0}, multicast_send_retries{0};
 std::atomic<int> multicast_last_errno{0};
 live_mplane mplane;
+// The video upstream's l3 receive counters, from ground_video_set_link_stats.
+std::mutex link_mu;
+ground_video_link_stats link_stats;
+bool link_have = false;
 constexpr int mplane_port = 5090; // Same port as the rover's vstreamer mplane.
 constexpr vstreamer::thread_opts mplane_thread{"vs_mplane", 6 * 1024, 0, 5};
 
@@ -245,28 +248,25 @@ void ground_video_set_ethernet(uint32_t address) { ethernet.store(address); }
 esp_err_t ground_video_start(std::shared_ptr<winject::core::UpstreamQueue> up) {
     if (!up || receiver) return ESP_ERR_INVALID_STATE;
     auto rx = std::make_unique<vstreamer::stream_receiver>();
+    // The link half of the reports to the rover: l3's air counters for the
+    // video upstream, before its FEC.
+    if (rx->set_link_counters([](vstreamer::stream_receiver::link_counters *c) {
+            std::lock_guard<std::mutex> lock(link_mu);
+            if (!link_have) return false;
+            c->packets = link_stats.packets;
+            c->gaps = link_stats.gaps;
+            c->bytes = link_stats.bytes;
+            return true;
+        }) < 0) return ESP_FAIL;
     if (rx->set_datagram_transport(
-            [up, checked = false]() mutable {
-                // Run on the already placed receive worker, before video input.
-                // PIE first-use may bind a FreeRTOS task to its current core.
-                if (!checked) {
-                    for (int rows : {1, 2, 10}) {
-                        int64_t fast_us = 0, table_us = 0;
-                        const int bad = vstreamer::rs_encode_selftest(21, rows, 1403, 2,
-                            esp_timer_get_time, &fast_us, &table_us);
-                        printf("GROUND_RS_SELFTEST rows=%d mismatches=%d backend=%s fast_us=%lld table_us=%lld\n",
-                            rows, bad, vstreamer::rs_encode_scalar_impl(),
-                            (long long)fast_us, (long long)table_us);
-                    }
-                    checked = true;
-                }
+            [up]() {
                 auto packet = up->receive(); if (packet) ++fec_input; return packet;
             },
             [up](const uint8_t *bytes, size_t size) {
                 const bool sent = up->try_send(bytes, size);
                 if (!sent) ++feedback_drop;
                 return sent;
-            }) < 0 || rx->configure("max_datagram", "1445") < 0 ||
+            }) < 0 || rx->configure("max_datagram", "1444") < 0 ||
         rx->configure("recv_cpu", "1") < 0 || rx->configure("recv_prio", "13") < 0 || rx->open() < 0) return ESP_FAIL;
     upstream = std::move(up); receiver = std::move(rx);
     auto err = usb_upstream_register_source(0, "video-rtp-h264",
@@ -300,15 +300,25 @@ esp_err_t ground_video_start(std::shared_ptr<winject::core::UpstreamQueue> up) {
            multicast_group, multicast_port);
     return ESP_OK;
 }
+void ground_video_set_link_stats(const ground_video_link_stats &stats) {
+    std::lock_guard<std::mutex> lock(link_mu);
+    link_stats = stats;
+    link_have = true;
+}
+
 void ground_video_log_stats() {
     if (!ready.load()) return;
-    std::string given_up, late, rs_errors, spread, jitter;
-    receiver->query("fec_given_up_blocks", &given_up);
-    receiver->query("fec_late_blocks", &late);
-    receiver->query("fec_rs_failures", &rs_errors);
-    receiver->query("fec_spread_est_ms", &spread);
-    receiver->query("fec_jitter_est_ms", &jitter);
-    printf("GROUND_FEC backend=%s given_up=%s late=%s rs_errors=%s spread_ms=%s jitter_ms=%s margin_floor_ms=40\n",
-        vstreamer::rs_encode_scalar_impl(), given_up.c_str(), late.c_str(), rs_errors.c_str(), spread.c_str(), jitter.c_str());
+    ground_video_link_stats l;
+    {
+        std::lock_guard<std::mutex> lock(link_mu);
+        l = link_stats;
+    }
+    // FEC is winject-l3's (upstream 1); these are its read stream's counters.
+    printf("GROUND_FEC rec=%llu lost=%llu gap=%llu given_up=%llu late=%llu drops=%llu air_rx=%llu air_gap=%llu spread_ms=%.1f jitter_ms=%.1f\n",
+        (unsigned long long)l.fec_recovered, (unsigned long long)l.fec_lost,
+        (unsigned long long)l.fec_gap, (unsigned long long)l.fec_given_up,
+        (unsigned long long)l.fec_late, (unsigned long long)l.fec_drops,
+        (unsigned long long)l.packets, (unsigned long long)l.gaps,
+        l.fec_spread_ms, l.fec_jitter_ms);
     printf("GROUND_VIDEO %s\n", ground_video_stats().c_str());
 }

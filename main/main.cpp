@@ -17,6 +17,7 @@
 #include <stdio.h>
 
 #include "WinjectL3.h"
+#include "winject_fec/rs_kernel.hpp"
 #include "winject_l3/Console.h"
 #include "apps/bwtest/Bwtest.h"
 #include "synch/SynchGpio.h"
@@ -434,6 +435,30 @@ void put32le(uint8_t *p, uint32_t v) {
     for (int i = 0; i < 4; ++i) p[i] = uint8_t(v >> (8 * i));
 }
 
+// The video upstream's (1) receive counters, for the vstreamer receiver's link
+// reports to the rover and the GROUND_FEC log line.
+void sample_video_link(const winject::L3 &l3) {
+    auto up = l3.upstreams().get(1);
+    if (!up.ok()) return;
+    const auto st = up.value.rx_stats();
+    if (!st.ok()) return;
+    const auto &s = st.value;
+    ground_video_link_stats l;
+    // Every slot from the air (plain and FEC), before l3's FEC.
+    l.packets = s.air_packets;
+    l.bytes = s.air_bytes;
+    l.gaps = s.air_gap;
+    l.fec_recovered = s.fec_recovered;
+    l.fec_lost = s.fec_lost;
+    l.fec_gap = s.fec_gap;
+    l.fec_given_up = s.fec_given_up;
+    l.fec_late = s.fec_late;
+    l.fec_drops = s.fec_drops;
+    l.fec_spread_ms = s.fec_spread_est_ms;
+    l.fec_jitter_ms = s.fec_jitter_est_ms;
+    ground_video_set_link_stats(l);
+}
+
 bool sum_link_rx(const winject::L3 &l3, uint64_t *bytes, uint64_t *packets, uint64_t *lost) {
     auto ups = l3.upstreams().list();
     if (!ups.ok()) return false;
@@ -441,9 +466,9 @@ bool sum_link_rx(const winject::L3 &l3, uint64_t *bytes, uint64_t *packets, uint
     for (const auto &up : ups.value) {
         const auto st = up.rx_stats();
         if (!st.ok()) continue;
-        const bool fec = st.value.fec_packets > 0;
-        *bytes += fec ? st.value.fec_bytes : st.value.bytes;
-        *packets += fec ? st.value.fec_packets : st.value.packets;
+        // Every slot from the air, plain and FEC, before recovery.
+        *bytes += st.value.air_bytes;
+        *packets += st.value.air_packets;
         *lost += st.value.air_gap;
     }
     return true;
@@ -460,6 +485,18 @@ void start_link_stats_poll(const winject::L3 &l3) {
     cfg.thread_name = "link_stats";
     cfg.stack_alloc_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
     cfg.pin_to_core = 1;
+    esp_pthread_set_cfg(&cfg);
+    // The video receiver sends a link report every 100 ms: sample its
+    // upstream as often, so each report carries fresh link counters.
+    cfg.thread_name = "video_link";
+    esp_pthread_set_cfg(&cfg);
+    std::thread([l3] {
+        while (l3.running()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            sample_video_link(l3);
+        }
+    }).detach();
+    cfg.thread_name = "link_stats";
     esp_pthread_set_cfg(&cfg);
     std::thread([l3] {
         int8_t rssi = 0;
@@ -505,6 +542,19 @@ void start_radio_queues() {
     radio_tx->set_capacity(256);
     radio_rx->set_capacity(256);
     radio_reactor = std::make_shared<bfc::cv_reactor<>>();
+    // l3's FEC for the video (upstream 1, L3-owned queue) decodes on this
+    // reactor: check the PIE kernel against the table path there first (its
+    // first use may bind the task to its core). A mismatch turns PIE off.
+    radio_reactor->wake_up([] {
+        for (int rows : {1, 2, 10}) {
+            int64_t fast_us = 0, table_us = 0;
+            const int bad = winject::fec::rs_encode_selftest(21, rows, 1403, 2,
+                [] { return int64_t(esp_timer_get_time()); }, &fast_us, &table_us);
+            printf("GROUND_RS_SELFTEST rows=%d mismatches=%d backend=%s fast_us=%lld table_us=%lld\n",
+                rows, bad, winject::fec::rs_encode_scalar_impl(), (long long)fast_us,
+                (long long)table_us);
+        }
+    });
     using Registry = bfc::cv_reactor_circular_lossy_queue_registry<bfc::shared_sized_buffer>;
     ESP_ERROR_CHECK(Registry::get_instance().add(radio_tx_name, radio_tx) &&
                     Registry::get_instance().add(radio_rx_name, radio_rx) &&
@@ -641,7 +691,15 @@ static void *l3_main(void *)
     video.bus_rx = 0xc3;
     video.rx_queue_capacity = 256;
     video.scheduler_budget = 4096;
-    video.fec_type = winject::core::FecType::none; // vstreamer FEC terminates at the P4 receiver.
+    // The same FEC as the rover's upstream 1 (6/8, 4 ms spread): l3 decodes
+    // the rover's video from the shard headers, and this side's link reports
+    // go out protected too. Matching settings keep the FEC-mismatch counter
+    // (air_rx_fec_unexpected) meaningful.
+    video.fec_type = winject::core::FecType::RsBlockErasure;
+    video.fec_k = 6;
+    video.fec_n = 8;
+    video.fec_timeout_ms = 20;
+    video.fec_spread_ms = 4;
     cfg.upstreams.push_back(video);
     winject::core::UpstreamConfig bwtest;
     bwtest.index = 2; // Rover upstream 2 with the buses swapped.

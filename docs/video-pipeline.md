@@ -1,36 +1,43 @@
 # Ground video receive and fanout
 
-P4 runs the pinned vstreamer `stream_receiver` component, not a second codec.
-The L3-owned video `UpstreamQueue` (index 1) feeds the receiver directly through
-nonblocking datagram callbacks. Reverse receiver reports return using
-`UpstreamQueue::try_send()`. Both the proxy-to-L3 and L3-to-FEC data paths use
+Video FEC is winject-l3's: the rover sends upstream 1 with winject-fec (6/8,
+4 ms spread; this board's upstream 1 has the same settings, so its reverse
+reports are protected too), and this board's l3 decodes it from the shard headers, rebuilds
+lost RTP packets from parity and delivers them in sequence. P4 then runs the
+pinned vstreamer `stream_receiver` component (no FEC of its own): the
+L3-owned video `UpstreamQueue` (index 1) feeds it directly through nonblocking
+datagram callbacks, and it hands each RTP packet to the fanout at once. Reverse
+receiver reports return using `UpstreamQueue::try_send()`; their link half is
+upstream 1's air counters (l3 `rx_stats` `air_packets`/`air_bytes`/`air_gap`:
+every slot before FEC, whatever its type; sampled every 100 ms by the
+`video_link` thread, as often as the receiver reports), their stream half the
+receiver's own. Both the proxy-to-L3 and L3-to-receiver data paths use
 in-process queues; only the low-rate radio management plane uses loopback UDP.
 Android does not send radio receiver reports.
 
-Radio queue callbacks run on CPU0 and the FEC receive worker runs on CPU1.
-This prevents heavy reconstruction from falling behind SDIO on one core while
-the other core is idle. The L3 app RX queue holds 256 datagrams.
+Radio queue callbacks and l3 run on CPU0 (the `ground_radio` reactor), and so
+does l3's FEC decode now: the RS rebuild moved there from the vstreamer receive
+worker, which stays on CPU1. A 6/8 rebuild is small (missing data rows only,
+present rows used as shared views, parity never rebuilt), but under heavy
+burst loss or a larger k/n it shares CPU0 with the radio queues: watch
+`radio_queue_evict` and the ground radio reactor's CPU share (`get sys cpu`)
+when raising FEC. The L3 app RX queue holds 256 datagrams.
 
-RS repair reconstructs only missing data rows; missing parity rows are used
-for matrix selection but are never rebuilt. Present data uses shared views.
-This avoids spending most of a core reconstructing parity that is discarded.
-The P4 receiver uses a 40 ms minimum expiry margin for scheduler jitter.
+At startup `GROUND_RS_SELFTEST` compares winject-fec's PIE kernel with the
+table path on that reactor (1, 2 and 10 rows); a mismatch turns PIE off.
 
 The radio proxy's existing borrowed-input ownership copy allocates packet
-payloads in PSRAM (`WINJECT_PROXY_DPLANE_PSRAM`). L3 queue delivery preserves
-that owner, and the direct FEC input uses subviews instead of copying packets
-again. Both fanout consumers treat recovered RTP as immutable. Socket input
-still copies its reusable receive buffer. Reconstructed rows are 16-byte aligned
-and allocated in PSRAM (`VSTREAMER_RX_PSRAM`); output holds their application
-subviews. Only decoder source rows that need padding get temporary storage.
+payloads in PSRAM (`WINJECT_PROXY_DPLANE_PSRAM`). L3's FEC read stream hands on
+views of those buffers (rebuilt packets are its own), and the receiver keeps
+them as subviews instead of copying again. Both fanout consumers treat the RTP
+as immutable. Socket input still copies its reusable receive buffer.
 
-Ground exposes `VSTREAMER_RS_PIE` because it compiles vstreamer through its own
-component. Before input, the receive worker compares the PIE kernel with the
-scalar reference for 1, 2 and 10 output rows using unaligned inputs and an odd
-length. `GROUND_RS_SELFTEST` logs mismatches, selected backend and timings;
-a mismatch disables PIE through the kernel's existing fallback. `GROUND_FEC`
-also reports the current backend. Single-row PIE recovery need not be faster
-than the scalar kernel; measure the full pipeline under the actual loss rate.
+`GROUND_FEC` logs l3's FEC receive state for upstream 1 every 10 s: data shards
+rebuilt (`rec`), blocks that lost data (`lost`), app datagrams lost after FEC
+(`gap`), blocks given up, late shards, receiver drops, air slots and LC gaps,
+and the measured parity spread and jitter. The FEC give-up margin floor is
+40 ms (`WINJECT_FEC_RX_DEADLINE_MARGIN_MIN_MS`, set for the whole build): P4
+scheduling can hold a queued parity shard past the desktop 5 ms.
 
 USB DATA records are built directly in their final wire buffer from the shared
 RTP payload, avoiding an intermediate payload allocation/copy. The existing
@@ -54,7 +61,7 @@ packet on ENOMEM/ENOBUFS/EAGAIN, yields and retries in order; after 64 attempts
 it counts a send failure rather than holding stale video indefinitely.
 The EMAC uses 1600-byte DMA buffers and 24 TX descriptors so each MTU-sized
 packet needs one descriptor instead of three 512-byte descriptors. Multicast
-runs above the fanout worker; TinyUSB runs on CPU0, separate from the FEC worker.
+runs above the fanout worker; TinyUSB runs on CPU0, separate from the receive worker.
 
 A stalled USB consumer cannot take packets from the Ethernet queue. Offline
 Ethernet drops its output and does not stop USB. Nonblocking UDP sends can drop;
@@ -63,8 +70,8 @@ for the next keyframe. DisplayPort/MSP remains TBA.
 
 The receiver queue/pool is compiled at 256 entries instead of desktop's 4096:
 CMake generates a pinned-header variant without modifying dependency sources.
-The pool slab is approximately 384 KB. RS block storage, tasks and lwIP buffers
-add memory; real heap/CPU/throughput must be measured on the P4. Source changes
+The pool slab is approximately 384 KB. Tasks and lwIP buffers add memory (l3's
+FEC rows are winject-fec's); real heap/CPU/throughput must be measured on the P4. Source changes
 are guarded when the dependency pin changes. The L3 RX queue is 256 datagrams.
 
 ## USB compatibility
@@ -104,7 +111,7 @@ On Rockchip ground stations, vstreamer's `multicast_receiver` sample runs
 Build with the multicast source, RTP depayloader, MPP decoder and SDL enabled,
 then run `multicast_receiver --interface end1` (or your Ethernet interface).
 The host's former L3/stream_receiver services must be stopped; P4 now owns FEC
-and radio feedback.
+(in l3) and radio feedback.
 
 Example receiver: `ffplay -protocol_whitelist file,udp,rtp -i ground-video.sdp`.
 The client must receive the sender's in-band SPS/PPS and a keyframe. There is
@@ -122,9 +129,11 @@ cmake --build video-build -j 4
 ctest --test-dir video-build --output-on-failure
 ```
 
-It sends real vstreamer/FEC packets into stock stream_receiver over loopback,
-drops shards, verifies byte-identical RTP on both output queues, reconstructs
-an IDR, checks reverse feedback and stalls one branch to verify isolation.
+It sends real vstreamer media datagrams into stock stream_receiver over
+loopback and direct queues, verifies byte-identical RTP on both output queues,
+reconstructs an IDR, checks reverse feedback and stalls one branch to verify
+isolation. FEC recovery is tested where it now runs, in winject-l3 and
+winject-fec.
 The test needs local UDP sockets. Existing `tests/run_host_tests.py` additionally
 checks receive-only source metadata, source delivery and invalid inbound DATA.
 `owned_ingress_test` and `l3_owned_queue_test` verify original storage identity
