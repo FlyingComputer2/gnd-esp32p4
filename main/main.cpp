@@ -701,7 +701,7 @@ static void *l3_main(void *)
     video.fec_timeout_ms = 20;
     video.fec_spread_ms = 4;
     cfg.upstreams.push_back(video);
-    // Every upstream but video (its own 6/8) and clock sync (0, no FEC) carries
+    // Every upstream but video (its own 6/8), clock sync (0) and bwtest (2) carries
     // RS 2/5: data goes out at once, three parity shards follow, a short block
     // is flushed after 20 ms. The rover's config/winject.conf matches.
     const auto control_fec = [](winject::core::UpstreamConfig &u)
@@ -720,7 +720,7 @@ static void *l3_main(void *)
     bwtest.endpoint.tx = bwtest_up.names.from_l3;
     bwtest.reactor = radio_reactor_name;
     bwtest.scheduler_budget = 4096;
-    control_fec(bwtest); // Loss counts are after FEC.
+    bwtest.fec_type = winject::core::FecType::none; // Clean loss counts.
     cfg.upstreams.push_back(bwtest);
     winject::core::UpstreamConfig rover_rc;
     rover_rc.index = 3; // Rover upstream 3 (rover_sample) with the buses swapped.
