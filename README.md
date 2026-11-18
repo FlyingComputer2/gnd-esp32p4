@@ -49,14 +49,14 @@ channel 1, OFDM_24M, 20 dBm. Upstreams (buses follow the flow, not the index):
 |----|--------|-----------------|-----|
 | 0 | Clock sync, krono SynchServer (reference clock), UDP console 5110 | a1 / b2 | none |
 | 1 | Video | d4 / c3 | RS 6/8, 4 ms spread, as the rover's (decodes the video, protects the reverse reports) |
-| 2 | Bandwidth tester, app_bwtest, UDP console 5100 (`test_send <offer_kbps> <duration_ms>`, `stats`, `clr`) | e5 / f6 | none |
-| 3 | RC car (rover_sample): RC up, telemetry down; bridged to USB channel 2 and UDP 5120 | 28 / 17 | none (RC repeats every 20 ms) |
-| 4 | Rover L3 m-plane: UDP server `0.0.0.0:2410`, replies go to the last sender (one operator at a time); replies over ~1445 B are dropped | a6 / 6a | none |
-| 5 | Rover C6 radio m-plane: UDP server `0.0.0.0:2420`; the rover forwards it to its proxy on UDP 22 | c7 / 7c | none |
-| 6 | Rover vstreamer m-plane: UDP server `0.0.0.0:5092`; the rover forwards it to its vstreamer on UDP 5090 | d8 / 8d | none |
-| 7 | Rover bandwidth tester m-plane: UDP server `0.0.0.0:5102` (replies to the last sender, one operator at a time); the rover's tester serves it directly on its upstream | b4 / 4b | none |
-| 8 | Rover clock-sync m-plane: UDP server `0.0.0.0:5112` (one operator at a time); the rover's krono client serves it directly on its upstream | c5 / 5c | none |
-| 9 | Rover udp_ota (its app, its C6, config files): UDP server `0.0.0.0:2430` (one client at a time); the rover forwards it to udp_ota on UDP 3232 (SDIO proxy `tools/udp_ota.py <ground>:2430 flash <app.bin> --reboot`, `flash-c6`, `fs-get` / `fs-put`) | e9 / 9e | none (the tool retransmits) |
+| 2 | Bandwidth tester, app_bwtest, UDP console 5100 (`test_send <offer_kbps> <duration_ms>`, `stats`, `clr`) | e5 / f6 | RS 2/5 (loss counts are after FEC) |
+| 3 | RC car (rover_sample): RC up, telemetry down; bridged to USB channel 2 and UDP 5120 | 28 / 17 | RS 2/5 |
+| 4 | Rover L3 m-plane: UDP server `0.0.0.0:2410`, replies go to the last sender (one operator at a time); replies over ~1445 B are dropped | a6 / 6a | RS 2/5 |
+| 5 | Rover C6 radio m-plane: UDP server `0.0.0.0:2420`; the rover forwards it to its proxy on UDP 22 | c7 / 7c | RS 2/5 |
+| 6 | Rover vstreamer m-plane: UDP server `0.0.0.0:5092`; the rover forwards it to its vstreamer on UDP 5090 | d8 / 8d | RS 2/5 |
+| 7 | Rover bandwidth tester m-plane: UDP server `0.0.0.0:5102` (replies to the last sender, one operator at a time); the rover's tester serves it directly on its upstream | b4 / 4b | RS 2/5 |
+| 8 | Rover clock-sync m-plane: UDP server `0.0.0.0:5112` (one operator at a time); the rover's krono client serves it directly on its upstream | c5 / 5c | RS 2/5 |
+| 9 | Rover udp_ota (its app, its C6, config files): UDP server `0.0.0.0:2430` (one client at a time); the rover forwards it to udp_ota on UDP 3232 (SDIO proxy `tools/udp_ota.py <ground>:2430 flash <app.bin> --reboot`, `flash-c6`, `fs-get` / `fs-put`) | e9 / 9e | RS 2/5 (the tool also retransmits) |
 
 Upstream 3 carries the rover's rover_sample protocol, MSP v2 with one frame per datagram (wire, messages and
 the rover's console: rov-esp32p4 README, "RC car"). This board does not parse it. Frames from USB channel 2
