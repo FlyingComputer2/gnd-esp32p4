@@ -701,6 +701,16 @@ static void *l3_main(void *)
     video.fec_timeout_ms = 20;
     video.fec_spread_ms = 4;
     cfg.upstreams.push_back(video);
+    // Every upstream but video (its own 6/8), clock sync (0) and bwtest (2) carries
+    // RS 2/5: data goes out at once, three parity shards follow, a short block
+    // is flushed after 20 ms. The rover's config/winject.conf matches.
+    const auto control_fec = [](winject::core::UpstreamConfig &u)
+    {
+        u.fec_type = winject::core::FecType::RsBlockErasure;
+        u.fec_k = 2;
+        u.fec_n = 5;
+        u.fec_timeout_ms = 20;
+    };
     winject::core::UpstreamConfig bwtest;
     bwtest.index = 2; // Rover upstream 2 with the buses swapped.
     bwtest.mode = winject::core::UpstreamMode::queue;
@@ -721,7 +731,7 @@ static void *l3_main(void *)
     rover_rc.endpoint.tx = rc_up_queues.names.from_l3;
     rover_rc.reactor = radio_reactor_name;
     rover_rc.scheduler_budget = 256;
-    rover_rc.fec_type = winject::core::FecType::none; // RC repeats at 50 Hz; FEC only adds latency.
+    control_fec(rover_rc);
     cfg.upstreams.push_back(rover_rc);
     // Upstream 4: the rover's L3 m-plane. UDP server mode: an operator sends
     // console requests to 2410 and gets the rover's replies back on the same
@@ -735,7 +745,7 @@ static void *l3_main(void *)
     rover_mplane.bus_rx = 0x6a;
     rover_mplane.rx_queue_capacity = 16;
     rover_mplane.scheduler_budget = 256;
-    rover_mplane.fec_type = winject::core::FecType::none;
+    control_fec(rover_mplane);
     cfg.upstreams.push_back(rover_mplane);
     // Upstream 5: the rover C6 radio m-plane. The rover's static UDP upstream
     // forwards this to its local proxy on port 22. That proxy routes replies
@@ -749,7 +759,7 @@ static void *l3_main(void *)
     rover_radio_mplane.bus_rx = 0x7c;
     rover_radio_mplane.rx_queue_capacity = 16;
     rover_radio_mplane.scheduler_budget = 256;
-    rover_radio_mplane.fec_type = winject::core::FecType::none;
+    control_fec(rover_radio_mplane);
     cfg.upstreams.push_back(rover_radio_mplane);
     // Upstream 6: the rover vstreamer m-plane. This board's receiver m-plane
     // already owns UDP 5090, so an operator uses 5092 for the rover. The
@@ -763,7 +773,7 @@ static void *l3_main(void *)
     rover_video_mplane.bus_rx = 0x8d;
     rover_video_mplane.rx_queue_capacity = 16;
     rover_video_mplane.scheduler_budget = 256;
-    rover_video_mplane.fec_type = winject::core::FecType::none;
+    control_fec(rover_video_mplane);
     cfg.upstreams.push_back(rover_video_mplane);
     // Upstreams 7-9, like 4-6: UDP servers that reply to the last sender, one
     // operator at a time. 7 and 8 are the rover tester's and clock-sync
@@ -772,7 +782,7 @@ static void *l3_main(void *)
     // use 5100 / 5110. 9 is the rover's udp_ota (its app, its C6 and config
     // files; the rover forwards it to its UDP 3232): run the SDIO proxy's
     // tools/udp_ota.py against this board's UDP 2430 (this board's own
-    // udp_ota is on 3232); no FEC, the tool retransmits. No authentication:
+    // udp_ota is on 3232); the tool also retransmits. No authentication:
     // bandwidth tests, the rover's sync mode, its firmware and config are
     // exposed over the air.
     struct rover_mplane_s { size_t index; const char *rx; uint8_t bus_tx, bus_rx; size_t queue, budget; };
@@ -790,7 +800,7 @@ static void *l3_main(void *)
         u.bus_rx = m.bus_rx;
         u.rx_queue_capacity = m.queue;
         u.scheduler_budget = m.budget;
-        u.fec_type = winject::core::FecType::none;
+        control_fec(u);
         cfg.upstreams.push_back(u);
     }
     cfg.on_upstream_queue = [](size_t index, std::shared_ptr<winject::core::UpstreamQueue> up)
