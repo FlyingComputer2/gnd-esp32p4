@@ -31,7 +31,12 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
-CONFIG_LWIP_MAX_SOCKETS=24
+# Sockets and UDP PCBs: the relays to the rover (udp_server upstreams 4-11),
+# the consoles, the USB cli bridge, the receiver's fan-out, udp_ota, DHCP / SNTP
+# and two UDP sockets per bfc poll reactor (its wake "pipe"). The rover ran out
+# at the default 16 UDP PCBs once udpfs was added; keep headroom here too.
+CONFIG_LWIP_MAX_SOCKETS=32
+CONFIG_LWIP_MAX_UDP_PCBS=32
 CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=16384
 
 # One full Ethernet frame per descriptor; room for recovered RTP bursts.

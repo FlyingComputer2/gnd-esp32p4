@@ -5,11 +5,12 @@
 // m-plane (UDP 2420), 6 rover vstreamer m-plane (UDP 5092), 7 rover tester
 // m-plane (UDP 5102), 8 rover clock-sync m-plane (UDP 5112), 9 rover udp_ota
 // (app, C6 and config files, UDP 2430), 10 rover system m-plane (get sys
-// cpu / heap / stack, UDP 5132). 4-10 are udp_server upstreams: replies
-// go to the last sender, one operator at a time. Buses as on the rover, swapped:
-// sync a1/b2, video d4/c3, tester e5/f6, rover_sample 28/17, L3 m-plane
-// a6/6a, C6 m-plane c7/7c, vstreamer m-plane d8/8d, tester console b4/4b,
-// sync console c5/5c, udp_ota e9/9e.
+// cpu / heap / stack, UDP 5132), 11 rover files (udpfs, UDP 2440). 4-11 are
+// udp_server upstreams: replies go to the last sender, one operator at a time.
+// Buses as on the rover, swapped: sync a1/b2, video d4/c3, tester e5/f6,
+// rover_sample 28/17, L3 m-plane a6/6a, C6 m-plane c7/7c, vstreamer m-plane
+// d8/8d, tester console b4/4b, sync console c5/5c, udp_ota e9/9e, system
+// m-plane f3/3f, udpfs b1/1b.
 // USB IDs: 0 video, 1 MSP DisplayPort (TBA), 2 MSP RC telemetry (rover_sample),
 // 3 sync (krono synch requests from the Android app, answered against this
 // board's clock).
@@ -701,7 +702,7 @@ static void *l3_main(void *)
     video.fec_timeout_ms = 20;
     video.fec_spread_ms = 4;
     cfg.upstreams.push_back(video);
-    // Every upstream but video (its own 6/8), clock sync (0) and bwtest (2) carries
+    // Every upstream but video (its own 6/8), clock sync (0), bwtest (2) and udpfs (11) carries
     // RS 2/5: data goes out at once, three parity shards follow, a short block
     // is flushed after 20 ms. The rover's config/winject.conf matches.
     const auto control_fec = [](winject::core::UpstreamConfig &u)
@@ -791,7 +792,11 @@ static void *l3_main(void *)
                           rover_mplane_s{9, "0.0.0.0:2430", 0xe9, 0x9e, 64, 4096},
                           // 10: the rover's system applet (get sys cpu / heap / stack / ...);
                           // its console is UDP 5130 on the rover, this board's relay 5132.
-                          rover_mplane_s{10, "0.0.0.0:5132", 0xf3, 0x3f, 16, 256}}) {
+                          rover_mplane_s{10, "0.0.0.0:5132", 0xf3, 0x3f, 16, 256},
+                          // 11: the rover's files (udpfs, FlyingComputer2/udpfs), as root on
+                          // its /sdcard and /winject; the udpfs tool (or the phone, over the
+                          // USB cli channel to 127.0.0.1:2440) is the client. No FEC below.
+                          rover_mplane_s{11, "0.0.0.0:2440", 0xb1, 0x1b, 64, 4096}}) {
         winject::core::UpstreamConfig u;
         u.index = m.index;
         u.mode = winject::core::UpstreamMode::udp_server;
@@ -800,7 +805,9 @@ static void *l3_main(void *)
         u.bus_rx = m.bus_rx;
         u.rx_queue_capacity = m.queue;
         u.scheduler_budget = m.budget;
-        control_fec(u);
+        // udpfs: every request is safe to resend and the client resends, so no
+        // FEC; RS 2/5 would cost bulk transfers 2.5x the airtime.
+        if (m.index != 11) control_fec(u);
         cfg.upstreams.push_back(u);
     }
     cfg.on_upstream_queue = [](size_t index, std::shared_ptr<winject::core::UpstreamQueue> up)
