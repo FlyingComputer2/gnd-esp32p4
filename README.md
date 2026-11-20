@@ -57,6 +57,8 @@ channel 1, OFDM_24M, 20 dBm. Upstreams (buses follow the flow, not the index):
 | 7 | Rover bandwidth tester m-plane: UDP server `0.0.0.0:5102` (replies to the last sender, one operator at a time); the rover's tester serves it directly on its upstream | b4 / 4b | RS 2/5 |
 | 8 | Rover clock-sync m-plane: UDP server `0.0.0.0:5112` (one operator at a time); the rover's krono client serves it directly on its upstream | c5 / 5c | RS 2/5 |
 | 9 | Rover udp_ota (its app, its C6, config files): UDP server `0.0.0.0:2430` (one client at a time); the rover forwards it to udp_ota on UDP 3232 (SDIO proxy `tools/udp_ota.py <ground>:2430 flash <app.bin> --reboot`, `flash-c6`, `fs-get` / `fs-put`) | e9 / 9e | RS 2/5 (the tool also retransmits) |
+| 10 | Rover system m-plane: UDP server `0.0.0.0:5132`; the rover's sys applet serves it on its upstream (`get sys cpu\|heap\|stack\|uptime\|reset\|version\|sd\|udpfs`) | f3 / 3f | RS 2/5 |
+| 11 | Rover files (udpfs, [FlyingComputer2/udpfs](https://github.com/FlyingComputer2/udpfs)): UDP server `0.0.0.0:2440` (one client at a time); the rover's udpfs serves it on its upstream (`udpfs get <ground>:/sdcard/photo/rov_0001.jpg .`) | b1 / 1b | none (every request is safe to resend; the client resends) |
 
 Upstream 3 carries the rover's rover_sample protocol, MSP v2 with one frame per datagram (wire, messages and
 the rover's console: rov-esp32p4 README, "RC car"). This board does not parse it. Frames from USB channel 2
@@ -103,6 +105,8 @@ echo status | nc -u -w1 <ground> 5112   # rover sync client status
 
 UDP 2430 reaches the rover's udp_ota over upstream 9 (one client at a time); it is unauthenticated and can replace
 and reboot the rover's app and C6 and rewrite its config files.
+UDP 2440 reaches the rover's udpfs over upstream 11: file access as root on the rover's `/sdcard` and `/winject`,
+unauthenticated too. The phone reaches it over the USB cli channel (port 2440 on this board's loopback).
 
 Low-rate applets share one reactor thread (a `bfc::default_reactor<>` that `main.cpp` registers as `apps` in `bfc::default_reactor_registry` and runs after the applets have registered; priority 12, PSRAM stack): the tester (console 5100 and receive side), the krono server (answers each request as it arrives; console 5110) and the RC bridge (UDP 5120 and telemetry drain), each registering its callbacks on `start()`. Their upstreams (0, 2, 3) are `QUEUE_FORWARDING` on named queues (`<name>_tx` / `<name>_rx`, L3's side on `ground-radio`); a push from L3 wakes the reactor, so nothing polls. At most 16 datagrams per socket or queue per pass. `components/applets` is kept identical to rov-esp32p4's.
 
