@@ -42,7 +42,7 @@ include(${winject_sdio_proxy_SOURCE_DIR}/cmake/winject_sdio_proxy.cmake)
 
 FetchContent_Declare(vstreamer
     GIT_REPOSITORY https://github.com/FlyingComputer2/vstreamer.git
-    GIT_TAG 39707640910b759eb68318df428294478be5c8ba)
+    GIT_TAG 34a689b1a805356c699c1dcab7633a05b3653481)
 FetchContent_GetProperties(vstreamer)
 if(NOT vstreamer_POPULATED)
     FetchContent_Populate(vstreamer)
@@ -62,7 +62,7 @@ endif()
 # this firmware's bfc and pins none.
 FetchContent_Declare(sys_applet
     GIT_REPOSITORY https://github.com/FlyingComputer2/sys-applet-esp32p4.git
-    GIT_TAG 00c16e1fe60f359a7f25eb68839de60d2fa16f65)
+    GIT_TAG 0273c8de45ff37668631f12dcccf2a24aaa19ec6)
 FetchContent_GetProperties(sys_applet)
 if(NOT sys_applet_POPULATED)
     FetchContent_Populate(sys_applet)
